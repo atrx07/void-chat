@@ -1,63 +1,62 @@
 # void.chat
 
-> A minimalist, anonymous global chat. No accounts. No history. Just words in the dark.
+A real-time, anonymous global chatroom. No accounts. No sign-up. Just open the page and start talking.
 
-![void.chat](https://img.shields.io/badge/status-live-98c379?style=flat-square&logoColor=white)
-![Cloudflare Pages](https://img.shields.io/badge/hosted%20on-Cloudflare%20Pages-e06c75?style=flat-square)
-![D1 Database](https://img.shields.io/badge/database-Cloudflare%20D1-61afef?style=flat-square)
-![License](https://img.shields.io/badge/license-MIT-c678dd?style=flat-square)
+![status](https://img.shields.io/badge/status-live-98c379?style=flat-square)
+![platform](https://img.shields.io/badge/hosted%20on-Cloudflare%20Pages-e06c75?style=flat-square)
+![database](https://img.shields.io/badge/database-Cloudflare%20D1-61afef?style=flat-square)
+![license](https://img.shields.io/badge/license-MIT-c678dd?style=flat-square)
+
+**Live at → [void-chat-4wf.pages.dev](https://void-chat-4wf.pages.dev)**
 
 -----
 
-## What is void.chat?
+## Overview
 
-**void.chat** is a real-time anonymous global chatroom. Every visitor gets a randomly generated username — something like `silent_echo42` or `frozen_shade67` — and can immediately start talking to anyone else in the room. No sign-up. No profile. No trace.
+void.chat strips chat down to its core — open the page, get a name, start talking. Every visitor is automatically assigned a randomly generated username and a unique color. There are no rooms, no threads, no profiles. Just one shared space for whoever shows up.
 
-It’s the internet the way it used to feel.
+It is built entirely on Cloudflare’s edge infrastructure — no traditional servers, no DevOps overhead, global by default.
 
 -----
 
 ## Features
 
-- 🎭 **Random identity on every visit** — usernames like `wandering_phase14` are auto-generated from curated word pairs, each assigned a unique color
-- 🌍 **Truly global** — one shared chatroom, everyone in the world, no rooms or filters
-- ⚡ **Real-time polling** — messages refresh every 2.5 seconds, no websockets needed
-- 🖤 **Dark minimalist UI** — monospace font, scanline aesthetic, zero clutter
-- 📱 **Mobile first** — works across Chrome, Brave, and Safari on Android and iOS
-- 🔒 **Zero data collection** — no emails, no passwords, no tracking
-- 🛠️ **Serverless architecture** — runs entirely on Cloudflare’s global edge network
+### Anonymous Identity System
+
+Every session generates a unique username from a curated pool of adjectives and nouns — names like `silent_echo42` or `wandering_phase14`. Each username is deterministically assigned a color from a dark-theme palette, so users are visually distinct without any configuration. Identities are session-scoped and disappear on refresh, keeping the experience truly anonymous.
+
+### Real-Time Messaging
+
+Messages are fetched via lightweight polling every 2.5 seconds. No WebSocket infrastructure required — the result is near-real-time chat with minimal complexity and zero persistent connections.
+
+### 200-Message Rolling Window
+
+The chat retains the last 200 messages at all times. When a new message is sent, the oldest one is automatically removed. This keeps the database lean indefinitely, ensures the chat always has context, and avoids the jarring experience of a sudden full wipe.
+
+### Serverless Edge Architecture
+
+The entire stack runs on Cloudflare’s global network. Pages Functions handle the API layer, D1 provides SQLite at the edge, and Pages serves the frontend — all from the same platform with no cold starts and sub-100ms response times globally.
+
+### Mobile-First Design
+
+Built to work across Android and iOS on Chrome, Brave, and Safari. Input zoom is suppressed, the chat box stays anchored above the keyboard, and touch targets are sized for real use.
+
+### Zero Dependencies
+
+No frameworks. No build tools. No package.json. The frontend is a single HTML file with vanilla JavaScript. The backend is a single JS module. The entire codebase is under 500 lines.
 
 -----
 
 ## Tech Stack
 
-|Layer   |Technology                          |
-|--------|------------------------------------|
-|Frontend|Vanilla HTML, CSS, JavaScript       |
-|Hosting |Cloudflare Pages                    |
-|Backend |Cloudflare Pages Functions          |
-|Database|Cloudflare D1 (SQLite at the edge)  |
-|Fonts   |JetBrains Mono + Syne (Google Fonts)|
-
-No frameworks. No build tools. No npm. Just clean, fast, portable web code.
-
------
-
-## How It Works
-
-```
-User visits void.chat
-        ↓
-Random username generated client-side
-        ↓
-Frontend polls /api/messages every 2.5s
-        ↓
-Pages Function queries D1 database
-        ↓
-New messages render instantly
-        ↓
-User sends message → POST /api/messages → stored in D1
-```
+|Layer     |Technology                                     |
+|----------|-----------------------------------------------|
+|Frontend  |Vanilla HTML, CSS, JavaScript                  |
+|Fonts     |JetBrains Mono + Syne (Google Fonts)           |
+|Hosting   |Cloudflare Pages                               |
+|API       |Cloudflare Pages Functions                     |
+|Database  |Cloudflare D1 (SQLite at the edge)             |
+|Deployment|GitHub → Cloudflare Pages (auto-deploy on push)|
 
 -----
 
@@ -65,33 +64,57 @@ User sends message → POST /api/messages → stored in D1
 
 ```
 void-chat/
-├── index.html              # Entire frontend (single file)
+├── index.html              # Complete frontend — UI, styling, and logic
 └── functions/
     └── api/
-        └── messages.js     # GET + POST API (Cloudflare Pages Function)
+        └── messages.js     # GET (fetch messages) + POST (send + rolling window cleanup)
 ```
 
 -----
 
-## Roadmap & Potential
+## API
 
-This is v1 — intentionally minimal. Here’s where it could go:
+### `GET /api/messages?since={id}`
 
-- [ ] **Message reactions** — anonymous emoji reactions on messages
-- [ ] **Rooms** — create named rooms with unique URLs (`void.chat/room/lofi`)
-- [ ] **Message expiry** — messages auto-delete after 24 hours for true ephemerality
-- [ ] **Typing indicators** — see when someone is typing
-- [ ] **WebSocket support** — upgrade from polling to true real-time via Cloudflare Durable Objects
-- [ ] **Custom domain** — `void.chat` or similar
-- [ ] **Rate limiting** — prevent spam with IP-based throttling via Cloudflare Workers
-- [ ] **Moderation tools** — basic word filtering and ban system
-- [ ] **PWA support** — install as an app, get push notifications
+Returns all messages with an ID greater than `since`. Used for incremental polling.
+
+```json
+{
+  "messages": [
+    { "id": 42, "username": "silent_echo42", "message": "hello", "created_at": 1741234567890 }
+  ]
+}
+```
+
+### `POST /api/messages`
+
+Inserts a new message and trims the chat to the last 200 messages.
+
+```json
+{ "username": "silent_echo42", "message": "hello" }
+```
+
+-----
+
+## Roadmap
+
+The current version is intentionally minimal. Planned and potential additions:
+
+- [ ] **WebSocket / Durable Objects** — upgrade from polling to true real-time connections
+- [ ] **Named rooms** — isolated chatrooms via unique URLs (`/room/lofi`, `/room/dev`)
+- [ ] **Typing indicators** — show when someone is composing a message
+- [ ] **Message reactions** — anonymous emoji reactions without accounts
+- [ ] **Rate limiting** — IP-based throttling via Cloudflare Workers to prevent spam
+- [ ] **Moderation layer** — basic word filtering and temporary bans
+- [ ] **PWA support** — installable app with push notifications
+- [ ] **Custom domain** — a proper home for the project
+- [ ] **UptimeRobot badge** — live status monitoring embedded in this README
 
 -----
 
 ## Running Locally
 
-No build step needed. Just serve the files:
+No build step required.
 
 ```bash
 git clone https://github.com/atrx07/void-chat.git
@@ -99,22 +122,16 @@ cd void-chat
 npx wrangler pages dev . --d1=DB=your-database-id
 ```
 
+Replace `your-database-id` with your D1 database ID from the Cloudflare dashboard.
+
 -----
 
 ## Deployment
 
-Deployed on **Cloudflare Pages** with a **D1** database binding. Any push to `main` triggers an automatic deployment.
+Pushing to `main` on GitHub triggers an automatic deployment via Cloudflare Pages. The D1 database binding (`DB`) is configured in the Pages project settings.
 
 -----
 
-## Philosophy
+## License
 
-Most chat apps want you to sign up, verify your email, pick a username, upload a photo, and agree to seventeen policies before you can say hello to someone.
-
-**void.chat** skips all of that.
-
-You load the page. You have a name. You talk. That’s it.
-
------
-
-*Built with curiosity. Deployed at the edge. Owned by no one.*
+MIT — use it, fork it, build on it.
