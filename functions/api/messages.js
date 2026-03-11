@@ -2,7 +2,7 @@
 
 export async function onRequestGet({ request, env }) {
 const url = new URL(request.url);
-const since = parseInt(url.searchParams.get(‘since’) || ‘0’, 10);
+const since = parseInt(url.searchParams.get('since') || '0', 10);
 
 try {
 const { results } = await env.DB.prepare(

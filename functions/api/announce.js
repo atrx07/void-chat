@@ -1,5 +1,5 @@
 // functions/api/announce.js
-import { verifyAdminToken } from ‘./admin/_verify.js’;
+import { verifyAdminToken } from './admin/_verify.js';
 
 export async function onRequestPost({ request, env }) {
 try {

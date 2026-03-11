@@ -1,13 +1,13 @@
 // functions/api/admin/ban.js
-import { verifyAdminToken } from ‘./_verify.js’;
+import { verifyAdminToken } from './_verify.js';
 
 export async function onRequestPost({ request, env }) {
 try {
 const { username, token } = await request.json();
 if (!await verifyAdminToken(token, env)) {
-return Response.json({ error: ‘Unauthorized’ }, { status: 401 });
+return Response.json({ error: 'Unauthorized' }, { status: 401 });
 }
-if (!username) return Response.json({ error: ‘Missing username’ }, { status: 400 });
+if (!username) return Response.json({ error: 'Missing username' }, { status: 400 });
 
 ```
 await env.DB.prepare(
