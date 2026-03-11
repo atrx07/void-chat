@@ -580,13 +580,22 @@
           userVisibleOnly: true,
           applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC)
         });
-        await fetch('/api/push/subscribe', {
+        var subRes = await fetch('/api/push/subscribe', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username: MY_NAME, subscription: sub })
+          body: JSON.stringify({ username: MY_NAME, subscription: sub.toJSON() })
         });
-        lsSet('void_notif', '1');
-      } catch (e) { notifToggle.checked = false; }
+        var subData = await subRes.json();
+        if (subData.ok) {
+          lsSet('void_notif', '1');
+        } else {
+          notifToggle.checked = false;
+          alert('Failed to save subscription: ' + (subData.error || 'unknown error'));
+        }
+      } catch (e) {
+        notifToggle.checked = false;
+        alert('Notification setup failed: ' + e.message);
+      }
     } else {
       try {
         var reg2 = await navigator.serviceWorker.ready;

@@ -1,26 +1,37 @@
-async function buildVapidAuth(endpoint, publicKey, privateKey) {
-  var url = new URL(endpoint);
-  var audience = url.protocol + '//' + url.host;
-  var now = Math.floor(Date.now() / 1000);
-  var exp = now + 43200;
-  var header = btoa(JSON.stringify({ typ: 'JWT', alg: 'ES256' })).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-  var payload = btoa(JSON.stringify({ aud: audience, exp: exp, sub: 'mailto:admin@void.chat' })).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-  var unsigned = header + '.' + payload;
-  var keyData = Uint8Array.from(atob(privateKey.replace(/-/g,'+').replace(/_/g,'/')), function(c) { return c.charCodeAt(0); });
-  var key = await crypto.subtle.importKey('pkcs8', keyData, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
-  var sig = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, key, new TextEncoder().encode(unsigned));
-  var sigB64 = btoa(String.fromCharCode.apply(null, new Uint8Array(sig))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
-  return 'vapid t=' + unsigned + '.' + sigB64 + ', k=' + publicKey;
-}
-
-async function sendPush(subscription, payload, vapidPublic, vapidPrivate) {
+async function sendVapidPush(endpoint, publicKeyB64, privateKeyB64) {
   try {
-    var sub = typeof subscription === 'string' ? JSON.parse(subscription) : subscription;
-    var auth = await buildVapidAuth(sub.endpoint, vapidPublic, vapidPrivate);
-    var res = await fetch(sub.endpoint, {
+    var url = new URL(endpoint);
+    var audience = url.protocol + '//' + url.host;
+    var now = Math.floor(Date.now() / 1000);
+    var exp = now + 43200;
+
+    var header = btoa(JSON.stringify({ typ: 'JWT', alg: 'ES256' })).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+    var payload = btoa(JSON.stringify({ aud: audience, exp: exp, sub: 'mailto:admin@void.chat' })).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+    var unsigned = header + '.' + payload;
+
+    // Import raw private key (32 bytes)
+    var rawPriv = Uint8Array.from(atob(privateKeyB64.replace(/-/g,'+').replace(/_/g,'/')), function(c) { return c.charCodeAt(0); });
+    var key = await crypto.subtle.importKey(
+      'raw', rawPriv,
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      false, ['sign']
+    );
+
+    var sig = await crypto.subtle.sign(
+      { name: 'ECDSA', hash: 'SHA-256' },
+      key,
+      new TextEncoder().encode(unsigned)
+    );
+    var sigB64 = btoa(String.fromCharCode.apply(null, new Uint8Array(sig))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+    var jwt = unsigned + '.' + sigB64;
+
+    var res = await fetch(endpoint, {
       method: 'POST',
-      headers: { 'Authorization': auth, 'Content-Type': 'application/json', 'TTL': '60' },
-      body: JSON.stringify(payload)
+      headers: {
+        'Authorization': 'vapid t=' + jwt + ', k=' + publicKeyB64,
+        'TTL': '60',
+        'Content-Length': '0'
+      }
     });
     return res.status;
   } catch (e) { return 0; }
@@ -50,14 +61,17 @@ export async function onRequestPost({ request, env }) {
     var now = Date.now();
     await env.DB.prepare('INSERT INTO messages (username, message, created_at, type) VALUES (?, ?, ?, ?)').bind(username, clean, now, 'chat').run();
     await env.DB.prepare('DELETE FROM messages WHERE id NOT IN (SELECT id FROM messages ORDER BY id DESC LIMIT 200)').run();
+
     var vapidPublic = env.VAPID_PUBLIC;
     var vapidPrivate = env.VAPID_PRIVATE;
     if (vapidPublic && vapidPrivate) {
       try {
-        var subs = await env.DB.prepare('SELECT username, subscription FROM push_subscriptions WHERE username != ?').bind(username).all();
+        var subs = await env.DB.prepare('SELECT subscription FROM push_subscriptions WHERE username != ?').bind(username).all();
         if (subs.results && subs.results.length > 0) {
-          var payload = { title: username + ' in void.chat', body: clean.slice(0, 100) };
-          var sends = subs.results.map(function(s) { return sendPush(s.subscription, payload, vapidPublic, vapidPrivate); });
+          var sends = subs.results.map(function(s) {
+            var sub = JSON.parse(s.subscription);
+            return sendVapidPush(sub.endpoint, vapidPublic, vapidPrivate);
+          });
           await Promise.allSettled(sends);
         }
       } catch (e) {}
