@@ -527,4 +527,468 @@
 
   var VAPID_PUBLIC = 'BKIa4U1J5NylLtpQfemx1y3x2B1Q5RPQcJI2RvfTaHqJTHrSsDb-PP3BA_FaJqIARJ2aArC6ba48sK_DriGYGvM';
 
-  // Per
+  // Safe localStorage wrapper
+  function lsGet(k) { try { return localStorage.getItem(k); } catch(e) { return null; } }
+  function lsSet(k, v) { try { localStorage.setItem(k, v); } catch(e) {} }
+  function lsRemove(k) { try { localStorage.removeItem(k); } catch(e) {} }
+
+  // Persistent login
+  var savedUser = lsGet('void_username');
+  var savedType = lsGet('void_usertype');
+  var MY_NAME = savedUser || generateUsername();
+  var IS_REGISTERED = savedType === 'registered';
+  var IS_ADMIN = false;
+  var lastMsgId = 0;
+
+  function updateNameDisplay() {
+    var color = colorForName(MY_NAME);
+    document.getElementById('my-name-display').innerHTML =
+      'you are <strong style="color:' + color + '">' + MY_NAME + '</strong>';
+  }
+  updateNameDisplay();
+
+  // Register service worker
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/service-worker.js').catch(function() {});
+  }
+
+  // Restore logged-in UI if user was previously logged in
+  if (savedUser && IS_REGISTERED) {
+    document.getElementById('loggedin-name').textContent = savedUser;
+    document.getElementById('logged-in-info').style.display = 'block';
+    document.getElementById('logout-section').style.display = 'block';
+    document.getElementById('form-register').style.display = 'none';
+    document.getElementById('form-login').style.display = 'none';
+  }
+
+  // Notification toggle logic
+  var notifToggle = document.getElementById('notif-toggle');
+  if (notifToggle) notifToggle.checked = lsGet('void_notif') === '1';
+
+  notifToggle.addEventListener('change', async function() {
+    if (!IS_REGISTERED) { notifToggle.checked = false; return; }
+    if (notifToggle.checked) {
+      if (!('Notification' in window) || !('PushManager' in window)) {
+        alert('Push notifications not supported in this browser.');
+        notifToggle.checked = false; return;
+      }
+      var perm = await Notification.requestPermission();
+      if (perm !== 'granted') { notifToggle.checked = false; return; }
+      try {
+        var reg = await navigator.serviceWorker.ready;
+        var sub = await reg.pushManager.subscribe({
+          userVisibleOnly: true,
+          applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC)
+        });
+        await fetch('/api/push/subscribe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: MY_NAME, subscription: sub })
+        });
+        lsSet('void_notif', '1');
+      } catch (e) { notifToggle.checked = false; }
+    } else {
+      try {
+        var reg2 = await navigator.serviceWorker.ready;
+        var sub2 = await reg2.pushManager.getSubscription();
+        if (sub2) await sub2.unsubscribe();
+        await fetch('/api/push/unsubscribe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: MY_NAME })
+        });
+      } catch (e) {}
+      lsRemove('void_notif');
+    }
+  });
+
+  function urlBase64ToUint8Array(base64String) {
+    var padding = '='.repeat((4 - base64String.length % 4) % 4);
+    var base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+    var rawData = window.atob(base64);
+    var outputArray = new Uint8Array(rawData.length);
+    for (var i = 0; i < rawData.length; ++i) outputArray[i] = rawData.charCodeAt(i);
+    return outputArray;
+  }
+
+  const messagesEl = document.getElementById('messages');
+  const inputEl    = document.getElementById('msg-input');
+  const sendBtn    = document.getElementById('send-btn');
+  const statusEl   = document.getElementById('status');
+  const loadingEl  = document.getElementById('loading');
+  const sidebar    = document.getElementById('sidebar');
+  const overlay    = document.getElementById('sidebar-overlay');
+
+  // sidebar
+  document.getElementById('hamburger').addEventListener('click', function() {
+    sidebar.classList.add('open');
+    overlay.classList.add('open');
+  });
+  function closeSidebar() {
+    sidebar.classList.remove('open');
+    overlay.classList.remove('open');
+  }
+  document.getElementById('sidebar-close').addEventListener('click', closeSidebar);
+  overlay.addEventListener('click', closeSidebar);
+
+  // tabs
+  document.querySelectorAll('.sidebar-tab').forEach(function(tab) {
+    tab.addEventListener('click', function() {
+      document.querySelectorAll('.sidebar-tab').forEach(function(t) { t.classList.remove('active'); });
+      document.querySelectorAll('.sidebar-panel').forEach(function(p) { p.classList.remove('active'); });
+      tab.classList.add('active');
+      document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
+    });
+  });
+
+  function formatTime(ts) {
+    var d = new Date(ts);
+    return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+  }
+
+  function escHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  function showPanelMsg(el, text, type) {
+    el.textContent = text;
+    el.className = 'panel-msg ' + type;
+    el.style.display = 'block';
+    setTimeout(function() { el.style.display = 'none'; }, 3500);
+  }
+
+  function scrollToBottom() {
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  function setStatus(connected) {
+    statusEl.textContent = connected ? 'connected' : 'reconnecting...';
+    statusEl.className = connected ? 'connected' : '';
+  }
+
+  function appendMessage(msg) {
+    var div = document.createElement('div');
+    var isMe = msg.username === MY_NAME;
+    var isAnnounce = msg.type === 'announce';
+    div.className = 'msg' + (isMe ? ' is-me' : '') + (isAnnounce ? ' announce' : '');
+    div.dataset.id = msg.id;
+
+    var color = isAnnounce ? 'var(--c4)' : colorForName(msg.username);
+    var label = isAnnounce ? 'admin' : msg.username;
+
+    div.innerHTML =
+      '<span class="ts">' + formatTime(msg.created_at) + '</span>' +
+      '<span class="name" style="color:' + color + '">' + escHtml(label) + '</span>' +
+      '<span class="body">' + escHtml(msg.message) + '</span>' +
+      '<button class="del-btn" data-id="' + msg.id + '">x</button>';
+
+    div.querySelector('.del-btn').addEventListener('click', function(e) {
+      e.stopPropagation();
+      adminDeleteMessage(msg.id);
+    });
+
+    messagesEl.appendChild(div);
+  }
+
+  async function fetchMessages(since) {
+    var res = await fetch('/api/messages?since=' + (since || 0));
+    if (!res.ok) throw new Error('fetch failed');
+    return res.json();
+  }
+
+  async function loadInitial() {
+    try {
+      var data = await fetchMessages(0);
+      loadingEl.remove();
+      if (data.messages.length === 0) {
+        var sys = document.createElement('div');
+        sys.className = 'msg system';
+        sys.innerHTML = '<span class="body">no messages yet. say hello.</span>';
+        messagesEl.appendChild(sys);
+      } else {
+        data.messages.forEach(function(m) { appendMessage(m); });
+        lastMsgId = data.messages[data.messages.length - 1].id;
+      }
+      scrollToBottom();
+      setStatus(true);
+      setInterval(poll, 2500);
+    } catch(e) {
+      loadingEl.textContent = 'connection error. retrying...';
+      setTimeout(loadInitial, 3000);
+    }
+  }
+
+  async function poll() {
+    try {
+      var data = await fetchMessages(lastMsgId);
+      if (data.messages.length > 0) {
+        var sys = messagesEl.querySelector('.msg.system');
+        if (sys) sys.remove();
+        var atBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 60;
+        data.messages.forEach(function(m) { appendMessage(m); });
+        lastMsgId = data.messages[data.messages.length - 1].id;
+        if (atBottom) scrollToBottom();
+      }
+      setStatus(true);
+    } catch(e) { setStatus(false); }
+  }
+
+  async function sendMessage() {
+    var text = inputEl.value.trim();
+    if (!text) return;
+
+    if (IS_ADMIN && text.indexOf('/announce ') === 0) {
+      var announcement = text.slice(10).trim();
+      if (!announcement) return;
+      inputEl.value = '';
+      await fetch('/api/announce', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: announcement, adminToken: window._adminToken })
+      });
+      await poll();
+      return;
+    }
+
+    inputEl.value = '';
+    sendBtn.disabled = true;
+    try {
+      await fetch('/api/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: MY_NAME, message: text })
+      });
+      await poll();
+    } catch(e) { inputEl.value = text; }
+    finally { sendBtn.disabled = false; inputEl.focus(); }
+  }
+
+  sendBtn.addEventListener('click', sendMessage);
+  inputEl.addEventListener('keydown', function(e) { if (e.key === 'Enter') sendMessage(); });
+
+  // USER: register
+  document.getElementById('reg-btn').addEventListener('click', async function() {
+    var username = document.getElementById('reg-username').value.trim();
+    var password = document.getElementById('reg-password').value;
+    var msgEl = document.getElementById('reg-msg');
+    if (!username || !password) return showPanelMsg(msgEl, 'fill in all fields', 'err');
+    var res = await fetch('/api/auth/register', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: username, password: password })
+    });
+    var data = await res.json();
+    if (data.ok) {
+      MY_NAME = username;
+      IS_REGISTERED = true;
+      lsSet('void_username', username);
+      lsSet('void_usertype', 'registered');
+      updateNameDisplay();
+      showPanelMsg(msgEl, 'registered & logged in!', 'ok');
+      showLoggedIn(username);
+    } else {
+      showPanelMsg(msgEl, data.error || 'error', 'err');
+    }
+  });
+
+  // USER: login
+  document.getElementById('login-btn').addEventListener('click', async function() {
+    var username = document.getElementById('login-username').value.trim();
+    var password = document.getElementById('login-password').value;
+    var msgEl = document.getElementById('login-msg');
+    if (!username || !password) return showPanelMsg(msgEl, 'fill in all fields', 'err');
+    var res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: username, password: password })
+    });
+    var data = await res.json();
+    if (data.ok) {
+      MY_NAME = username;
+      IS_REGISTERED = true;
+      lsSet('void_username', username);
+      lsSet('void_usertype', 'registered');
+      updateNameDisplay();
+      showPanelMsg(msgEl, 'logged in!', 'ok');
+      showLoggedIn(username);
+    } else {
+      showPanelMsg(msgEl, data.error || 'wrong credentials', 'err');
+    }
+  });
+
+  function showLoggedIn(username) {
+    document.getElementById('loggedin-name').textContent = username;
+    document.getElementById('logged-in-info').style.display = 'block';
+    document.getElementById('logout-section').style.display = 'block';
+    document.getElementById('form-register').style.display = 'none';
+    document.getElementById('form-login').style.display = 'none';
+  }
+
+  document.getElementById('logout-btn').addEventListener('click', async function() {
+    // Unsubscribe push if active
+    if (lsGet('void_notif') === '1') {
+      try {
+        var reg = await navigator.serviceWorker.ready;
+        var sub = await reg.pushManager.getSubscription();
+        if (sub) await sub.unsubscribe();
+        await fetch('/api/push/unsubscribe', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: MY_NAME })
+        });
+      } catch (e) {}
+    }
+    lsRemove('void_username');
+    lsRemove('void_usertype');
+    lsRemove('void_notif');
+    IS_REGISTERED = false;
+    MY_NAME = generateUsername();
+    updateNameDisplay();
+    document.getElementById('notif-toggle').checked = false;
+    document.getElementById('logged-in-info').style.display = 'none';
+    document.getElementById('logout-section').style.display = 'none';
+    document.getElementById('form-register').style.display = 'block';
+    document.getElementById('form-login').style.display = 'block';
+  });
+
+  // ADMIN: login
+  document.getElementById('admin-login-btn').addEventListener('click', async function() {
+    var username = document.getElementById('admin-username').value.trim();
+    var password = document.getElementById('admin-password').value;
+    var msgEl = document.getElementById('admin-msg');
+    var res = await fetch('/api/admin/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: username, password: password })
+    });
+    var data = await res.json();
+    if (data.ok) {
+      IS_ADMIN = true;
+      window._adminToken = data.token;
+      document.body.classList.add('is-admin');
+      document.getElementById('admin-login-form').style.display = 'none';
+      document.getElementById('admin-controls').style.display = 'block';
+      MY_NAME = username;
+      updateNameDisplay();
+    } else {
+      showPanelMsg(msgEl, data.error || 'invalid credentials', 'err');
+    }
+  });
+
+  // ADMIN: clear chat
+  document.getElementById('clear-chat-btn').addEventListener('click', async function() {
+    if (!confirm('Clear entire chat? This cannot be undone.')) return;
+    var res = await fetch('/api/admin/clear', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: window._adminToken })
+    });
+    var data = await res.json();
+    var msgEl = document.getElementById('admin-action-msg');
+    if (data.ok) {
+      messagesEl.innerHTML = '';
+      var sys = document.createElement('div');
+      sys.className = 'msg system';
+      sys.innerHTML = '<span class="body">chat cleared by admin.</span>';
+      messagesEl.appendChild(sys);
+      lastMsgId = 0;
+      showPanelMsg(msgEl, 'chat cleared', 'ok');
+    } else {
+      showPanelMsg(msgEl, data.error || 'error', 'err');
+    }
+  });
+
+  // ADMIN: announce button
+  document.getElementById('announce-btn').addEventListener('click', async function() {
+    var message = document.getElementById('announce-input').value.trim();
+    var msgEl = document.getElementById('admin-action-msg');
+    if (!message) return showPanelMsg(msgEl, 'enter announcement text', 'err');
+    var res = await fetch('/api/announce', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: message, adminToken: window._adminToken })
+    });
+    var data = await res.json();
+    if (data.ok) {
+      document.getElementById('announce-input').value = '';
+      showPanelMsg(msgEl, 'announced!', 'ok');
+      await poll();
+    } else {
+      showPanelMsg(msgEl, data.error || 'error', 'err');
+    }
+  });
+
+  // ADMIN: ban
+  document.getElementById('ban-btn').addEventListener('click', async function() {
+    var username = document.getElementById('ban-input').value.trim();
+    var msgEl = document.getElementById('admin-action-msg');
+    if (!username) return showPanelMsg(msgEl, 'enter a username', 'err');
+    var res = await fetch('/api/admin/ban', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: username, token: window._adminToken })
+    });
+    var data = await res.json();
+    if (data.ok) {
+      document.getElementById('ban-input').value = '';
+      showPanelMsg(msgEl, username + ' banned', 'ok');
+    } else {
+      showPanelMsg(msgEl, data.error || 'error', 'err');
+    }
+  });
+
+  // ADMIN: load users
+  document.getElementById('load-users-btn').addEventListener('click', async function() {
+    var res = await fetch('/api/admin/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: window._adminToken })
+    });
+    var data = await res.json();
+    var list = document.getElementById('user-list');
+    list.innerHTML = '';
+    if (data.users && data.users.length > 0) {
+      data.users.forEach(function(u) {
+        var row = document.createElement('div');
+        row.className = 'user-row';
+        row.innerHTML =
+          '<span style="color:' + colorForName(u.username) + '">' + escHtml(u.username) + '</span>' +
+          '<button class="ban-btn" data-user="' + escHtml(u.username) + '">ban</button>';
+        row.querySelector('.ban-btn').addEventListener('click', async function(e) {
+          var uname = e.target.dataset.user;
+          await fetch('/api/admin/ban', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: uname, token: window._adminToken })
+          });
+          row.remove();
+        });
+        list.appendChild(row);
+      });
+    } else {
+      list.innerHTML = '<div style="color:var(--dim);font-size:11px;padding:8px 0">no registered users</div>';
+    }
+  });
+
+  // ADMIN: delete message
+  async function adminDeleteMessage(id) {
+    var res = await fetch('/api/admin/delete-message', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: id, token: window._adminToken })
+    });
+    var data = await res.json();
+    if (data.ok) {
+      var el = messagesEl.querySelector('.msg[data-id="' + id + '"]');
+      if (el) el.remove();
+    }
+  }
+
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', function() { scrollToBottom(); });
+  }
+
+  loadInitial();
+</script>
+</body>
+</html>
