@@ -458,6 +458,13 @@
       <button class="btn danger" id="ban-btn">ban user</button>
 
       <div class="divider"></div>
+      <div class="panel-title">unban username</div>
+      <div class="field">
+        <input type="text" id="unban-input" placeholder="username to unban" maxlength="30" autocomplete="off" />
+      </div>
+      <button class="btn success" id="unban-btn">unban user</button>
+
+      <div class="divider"></div>
       <div class="panel-title">registered users</div>
       <button class="btn" id="load-users-btn">load users</button>
       <div id="user-list"></div>
@@ -945,6 +952,25 @@
     if (data.ok) {
       document.getElementById('ban-input').value = '';
       showPanelMsg(msgEl, username + ' banned', 'ok');
+    } else {
+      showPanelMsg(msgEl, data.error || 'error', 'err');
+    }
+  });
+
+  // ADMIN: unban
+  document.getElementById('unban-btn').addEventListener('click', async function() {
+    var username = document.getElementById('unban-input').value.trim();
+    var msgEl = document.getElementById('admin-action-msg');
+    if (!username) return showPanelMsg(msgEl, 'enter a username', 'err');
+    var res = await fetch('/api/admin/unban', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: username, token: window._adminToken })
+    });
+    var data = await res.json();
+    if (data.ok) {
+      document.getElementById('unban-input').value = '';
+      showPanelMsg(msgEl, username + ' unbanned', 'ok');
     } else {
       showPanelMsg(msgEl, data.error || 'error', 'err');
     }
