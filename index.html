@@ -683,7 +683,7 @@
     statusEl.className = connected ? 'connected' : '';
   }
 
-  function appendMessage(msg) {
+  function buildMessageEl(msg) {
     var div = document.createElement('div');
     var isMe = msg.username === MY_NAME;
     var isAnnounce = msg.type === 'announce';
@@ -704,7 +704,11 @@
       adminDeleteMessage(msg.id);
     });
 
-    messagesEl.appendChild(div);
+    return div;
+  }
+
+  function appendMessage(msg) {
+    messagesEl.appendChild(buildMessageEl(msg));
   }
 
   async function fetchMessages(since) {
@@ -712,6 +716,10 @@
     if (!res.ok) throw new Error('fetch failed');
     return res.json();
   }
+
+  var oldestMsgId = 0;
+  var loadingOlder = false;
+  var noMoreOlder = false;
 
   async function loadInitial() {
     try {
@@ -726,9 +734,12 @@
         sys.className = 'msg system';
         sys.innerHTML = '<span class="body">no messages yet. say hello.</span>';
         messagesEl.appendChild(sys);
+        noMoreOlder = true;
       } else {
         data.messages.forEach(function(m) { appendMessage(m); });
         lastMsgId = data.messages[data.messages.length - 1].id;
+        oldestMsgId = data.messages[0].id;
+        if (startId === 0) noMoreOlder = true;
       }
       scrollToBottom();
       setStatus(true);
@@ -738,6 +749,39 @@
       setTimeout(loadInitial, 3000);
     }
   }
+
+  async function loadOlderMessages() {
+    if (loadingOlder || noMoreOlder || oldestMsgId <= 1) return;
+    loadingOlder = true;
+
+    var fetchFrom = Math.max(0, oldestMsgId - 51);
+    try {
+      var data = await fetchMessages(fetchFrom);
+      var older = data.messages.filter(function(m) { return m.id < oldestMsgId; });
+      if (older.length === 0) {
+        noMoreOlder = true;
+        loadingOlder = false;
+        return;
+      }
+      var prevHeight = messagesEl.scrollHeight;
+      var prevScroll = messagesEl.scrollTop;
+      // Prepend older messages
+      older.reverse().forEach(function(m) {
+        var el = buildMessageEl(m);
+        messagesEl.insertBefore(el, messagesEl.firstChild);
+      });
+      // Keep scroll position stable
+      messagesEl.scrollTop = prevScroll + (messagesEl.scrollHeight - prevHeight);
+      oldestMsgId = older[0].id;
+      if (oldestMsgId <= 1 || fetchFrom === 0) noMoreOlder = true;
+    } catch(e) {}
+    loadingOlder = false;
+  }
+
+  // Scroll up to load older messages
+  messagesEl.addEventListener('scroll', function() {
+    if (messagesEl.scrollTop < 80) loadOlderMessages();
+  });
 
   async function poll() {
     try {
