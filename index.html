@@ -723,7 +723,6 @@
 
   async function loadInitial() {
     try {
-      // Get latest message ID first, then load last 50
       var latest = await fetch('/api/push/latest').then(function(r) { return r.json(); }).catch(function() { return null; });
       var startId = 0;
       if (latest && latest.id && latest.id > 50) startId = latest.id - 50;
@@ -744,16 +743,17 @@
       scrollToBottom();
       setStatus(true);
       setInterval(poll, 2500);
+      // Passively load older messages in background after initial load
+      if (!noMoreOlder) setTimeout(loadOlderPassive, 1500);
     } catch(e) {
       loadingEl.textContent = 'connection error. retrying...';
       setTimeout(loadInitial, 3000);
     }
   }
 
-  async function loadOlderMessages() {
+  async function loadOlderPassive() {
     if (loadingOlder || noMoreOlder || oldestMsgId <= 1) return;
     loadingOlder = true;
-
     var fetchFrom = Math.max(0, oldestMsgId - 51);
     try {
       var data = await fetchMessages(fetchFrom);
@@ -763,25 +763,21 @@
         loadingOlder = false;
         return;
       }
+      // Prepend without affecting scroll position
       var prevHeight = messagesEl.scrollHeight;
       var prevScroll = messagesEl.scrollTop;
-      // Prepend older messages
       older.reverse().forEach(function(m) {
-        var el = buildMessageEl(m);
-        messagesEl.insertBefore(el, messagesEl.firstChild);
+        messagesEl.insertBefore(buildMessageEl(m), messagesEl.firstChild);
       });
-      // Keep scroll position stable
+      // Restore scroll so user sees no jump
       messagesEl.scrollTop = prevScroll + (messagesEl.scrollHeight - prevHeight);
       oldestMsgId = older[0].id;
       if (oldestMsgId <= 1 || fetchFrom === 0) noMoreOlder = true;
     } catch(e) {}
     loadingOlder = false;
+    // Keep loading until we have all 200
+    if (!noMoreOlder) setTimeout(loadOlderPassive, 800);
   }
-
-  // Scroll up to load older messages
-  messagesEl.addEventListener('scroll', function() {
-    if (messagesEl.scrollTop < 80) loadOlderMessages();
-  });
 
   async function poll() {
     try {
