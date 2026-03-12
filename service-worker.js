@@ -17,17 +17,14 @@ self.addEventListener('fetch', function(e) {
 
 self.addEventListener('push', function(e) {
   e.waitUntil(
-    fetch('/api/messages?since=0')
+    fetch('/api/push/latest')
       .then(function(r) { return r.json(); })
       .then(function(data) {
-        var msgs = data.messages || [];
-        if (msgs.length === 0) return;
-        var last = msgs[msgs.length - 1];
-        return self.registration.showNotification(last.username + ' in void.chat', {
-          body: last.message.slice(0, 100),
+        return self.registration.showNotification(data.username + ' in void.chat', {
+          body: (data.message || 'new message').slice(0, 100),
           icon: '/icon-192.png',
           badge: '/icon-192.png',
-          tag: 'void-msg-' + last.id,
+          tag: 'void-msg',
           renotify: true,
           vibrate: [100, 50, 100],
           data: { url: '/' }
@@ -37,6 +34,7 @@ self.addEventListener('push', function(e) {
         return self.registration.showNotification('void.chat', {
           body: 'new message',
           icon: '/icon-192.png',
+          badge: '/icon-192.png',
           tag: 'void-msg',
           data: { url: '/' }
         });
