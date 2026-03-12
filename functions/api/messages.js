@@ -100,8 +100,22 @@ async function buildVapidJWT(endpoint, vapidPublic, vapidPrivate) {
   var header = btoa(JSON.stringify({ typ: 'JWT', alg: 'ES256' })).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
   var payload = btoa(JSON.stringify({ aud: audience, exp: exp, sub: 'mailto:admin@void.chat' })).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
   var unsigned = header + '.' + payload;
-  var rawPriv = Uint8Array.from(atob(vapidPrivate.replace(/-/g,'+').replace(/_/g,'/')), function(c) { return c.charCodeAt(0); });
-  var key = await crypto.subtle.importKey('raw', rawPriv, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
+
+  // Import private key as JWK (raw format not supported for ECDSA signing in Workers)
+  // vapidPublic is 65-byte uncompressed P-256 point: 0x04 + x(32) + y(32)
+  function b64urlDecode(s) {
+    var b = s.replace(/-/g,'+').replace(/_/g,'/');
+    while (b.length % 4) b += '=';
+    return Uint8Array.from(atob(b), function(c) { return c.charCodeAt(0); });
+  }
+  function b64urlEncode(arr) {
+    return btoa(String.fromCharCode.apply(null, arr)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+  }
+  var pubBytes = b64urlDecode(vapidPublic); // 65 bytes
+  var x = b64urlEncode(pubBytes.slice(1, 33));
+  var y = b64urlEncode(pubBytes.slice(33, 65));
+  var jwk = { kty: 'EC', crv: 'P-256', x: x, y: y, d: vapidPrivate, key_ops: ['sign'] };
+  var key = await crypto.subtle.importKey('jwk', jwk, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
   var sig = await crypto.subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, key, new TextEncoder().encode(unsigned));
   var sigB64 = btoa(String.fromCharCode.apply(null, new Uint8Array(sig))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
   return unsigned + '.' + sigB64;
