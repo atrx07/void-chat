@@ -463,6 +463,7 @@
         <input type="text" id="unban-input" placeholder="username to unban" maxlength="30" autocomplete="off" />
       </div>
       <button class="btn success" id="unban-btn">unban user</button>
+      <div class="panel-msg" id="unban-msg" style="display:none"></div>
 
       <div class="divider"></div>
       <div class="panel-title">registered users</div>
@@ -960,7 +961,7 @@
   // ADMIN: unban
   document.getElementById('unban-btn').addEventListener('click', async function() {
     var username = document.getElementById('unban-input').value.trim();
-    var msgEl = document.getElementById('admin-action-msg');
+    var msgEl = document.getElementById('unban-msg');
     if (!username) return showPanelMsg(msgEl, 'enter a username', 'err');
     var res = await fetch('/api/admin/unban', {
       method: 'POST',
