@@ -19,6 +19,9 @@ export async function onRequestPost({ request, env }) {
     if (existing) return Response.json({ error: 'Username already taken' }, { status: 400 });
     var hashed = await hashPassword(password);
     await env.DB.prepare('INSERT INTO users (username, password_hash, created_at) VALUES (?, ?, ?)').bind(username, hashed, Date.now()).run();
+    // Welcome announcement
+    await env.DB.prepare('INSERT INTO messages (username, message, created_at, type) VALUES (?, ?, ?, ?)').bind('system', username + ' just joined the chat.', Date.now(), 'system').run();
+    await env.DB.prepare('DELETE FROM messages WHERE id NOT IN (SELECT id FROM messages ORDER BY id DESC LIMIT 200)').run();
     return Response.json({ ok: true });
   } catch (e) { return Response.json({ error: e.message }, { status: 500 }); }
 }

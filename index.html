@@ -160,6 +160,39 @@
 
     .divider { height: 1px; background: #2a2a2a; margin: 16px 0; }
 
+    /* system messages */
+    .msg.system .name { display: none; }
+    .msg.system .body { color: var(--dim); font-size: 11px; font-style: italic; }
+    .msg.system { opacity: 0.7; }
+
+    /* online tab */
+    #online-count-badge {
+      display: inline-block; background: var(--c3);
+      color: #000; font-size: 10px; font-weight: 600;
+      padding: 1px 6px; border-radius: 10px; margin-left: 5px;
+    }
+    .online-user-row {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 0; border-bottom: 1px solid var(--border);
+      font-size: 12px;
+    }
+    .online-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--c3); flex-shrink: 0;
+    }
+    #banned-section { margin-top: 16px; }
+    .banned-row {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 12px;
+      color: var(--c1);
+    }
+    .banned-row .unban-btn {
+      background: none; border: 1px solid var(--border);
+      color: var(--dim); font-family: 'JetBrains Mono', monospace;
+      font-size: 10px; padding: 3px 8px; cursor: pointer;
+    }
+    .banned-row .unban-btn:hover { border-color: var(--c3); color: var(--c3); }
+
     /* sidebar footer */
     #sidebar-footer {
       margin-top: auto;
@@ -369,6 +402,7 @@
   </div>
   <div id="sidebar-tabs">
     <button class="sidebar-tab active" data-tab="user">user</button>
+    <button class="sidebar-tab" data-tab="online">online<span id="online-count-badge">0</span></button>
     <button class="sidebar-tab" data-tab="admin">admin</button>
   </div>
 
@@ -422,6 +456,12 @@
     </div>
   </div>
 
+  <!-- ONLINE PANEL -->
+  <div class="sidebar-panel" id="panel-online">
+    <div class="panel-title">online now</div>
+    <div id="online-list"><div style="color:var(--dim);font-size:11px">loading...</div></div>
+  </div>
+
   <!-- ADMIN PANEL -->
   <div class="sidebar-panel" id="panel-admin">
     <div id="admin-login-form">
@@ -441,6 +481,7 @@
     <div id="admin-controls" style="display:none">
       <div class="panel-title">admin controls</div>
       <button class="btn danger" id="clear-chat-btn">clear entire chat</button>
+      <button class="btn danger" id="admin-logout-btn">logout admin</button>
       <div class="panel-msg" id="admin-action-msg" style="display:none"></div>
 
       <div class="divider"></div>
@@ -466,9 +507,13 @@
       <div class="panel-msg" id="unban-msg" style="display:none"></div>
 
       <div class="divider"></div>
-      <div class="panel-title">registered users</div>
+      <div class="panel-title">registered users <span id="users-count" style="color:var(--dim);font-size:10px"></span></div>
       <button class="btn" id="load-users-btn">load users</button>
       <div id="user-list"></div>
+      <div id="banned-section" style="display:none">
+        <div class="panel-title" style="margin-top:16px">banned users <span id="banned-count" style="color:var(--dim);font-size:10px"></span></div>
+        <div id="banned-list"></div>
+      </div>
     </div>
   </div>
 
@@ -558,6 +603,16 @@
   // Register service worker
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('/service-worker.js').catch(function() {});
+  }
+
+  // Restore admin login if previously logged in
+  var savedAdminToken = lsGet('void_admin_token');
+  if (savedAdminToken) {
+    IS_ADMIN = true;
+    window._adminToken = savedAdminToken;
+    document.body.classList.add('is-admin');
+    document.getElementById('admin-login-form').style.display = 'none';
+    document.getElementById('admin-controls').style.display = 'block';
   }
 
   // Restore logged-in UI if user was previously logged in
@@ -739,9 +794,63 @@
     }
   }
 
+  var lastDeletionCheck = Date.now() - 30000;
+
+  async function pollDeletions() {
+    try {
+      var res = await fetch('/api/deletions?since=' + lastDeletionCheck);
+      var data = await res.json();
+      lastDeletionCheck = Date.now();
+      if (data.deleted && data.deleted.length > 0) {
+        data.deleted.forEach(function(id) {
+          var el = messagesEl.querySelector('.msg[data-id="' + id + '"]');
+          if (el) el.remove();
+        });
+      }
+    } catch(e) {}
+  }
+
+  async function pingOnline() {
+    try {
+      await fetch('/api/online', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: MY_NAME })
+      });
+    } catch(e) {}
+  }
+
+  async function refreshOnlineList() {
+    try {
+      var res = await fetch('/api/online');
+      var data = await res.json();
+      var users = data.users || [];
+      document.getElementById('online-count-badge').textContent = users.length;
+      var list = document.getElementById('online-list');
+      list.innerHTML = '';
+      if (users.length === 0) {
+        list.innerHTML = '<div style="color:var(--dim);font-size:11px">no one online</div>';
+        return;
+      }
+      var header = document.createElement('div');
+      header.style.cssText = 'font-size:11px;color:var(--dim);margin-bottom:10px';
+      header.textContent = users.length + ' user' + (users.length === 1 ? '' : 's') + ' online';
+      list.appendChild(header);
+      users.forEach(function(u) {
+        var row = document.createElement('div');
+        row.className = 'online-user-row';
+        row.innerHTML = '<span class="online-dot"></span><span style="color:' + colorForName(u) + '">' + escHtml(u) + '</span>';
+        list.appendChild(row);
+      });
+    } catch(e) {}
+  }
+
   async function poll() {
     try {
       var data = await fetchMessages(lastMsgId);
+      pollDeletions();
+      pingOnline();
+      refreshOnlineList();
       if (data.messages.length > 0) {
         var sys = messagesEl.querySelector('.msg.system');
         if (sys) sys.remove();
@@ -886,6 +995,7 @@
     if (data.ok) {
       IS_ADMIN = true;
       window._adminToken = data.token;
+      lsSet('void_admin_token', data.token);
       document.body.classList.add('is-admin');
       document.getElementById('admin-login-form').style.display = 'none';
       document.getElementById('admin-controls').style.display = 'block';
@@ -977,6 +1087,18 @@
     }
   });
 
+  // ADMIN: logout
+  document.getElementById('admin-logout-btn').addEventListener('click', function() {
+    IS_ADMIN = false;
+    window._adminToken = null;
+    lsRemove('void_admin_token');
+    document.body.classList.remove('is-admin');
+    document.getElementById('admin-login-form').style.display = 'block';
+    document.getElementById('admin-controls').style.display = 'none';
+    document.getElementById('admin-username').value = '';
+    document.getElementById('admin-password').value = '';
+  });
+
   // ADMIN: load users
   document.getElementById('load-users-btn').addEventListener('click', async function() {
     var res = await fetch('/api/admin/users', {
@@ -986,9 +1108,16 @@
     });
     var data = await res.json();
     var list = document.getElementById('user-list');
+    var bannedList = document.getElementById('banned-list');
+    var bannedSection = document.getElementById('banned-section');
     list.innerHTML = '';
-    if (data.users && data.users.length > 0) {
-      data.users.forEach(function(u) {
+    bannedList.innerHTML = '';
+
+    // Registered users
+    var users = data.users || [];
+    document.getElementById('users-count').textContent = '(' + users.length + ')';
+    if (users.length > 0) {
+      users.forEach(function(u) {
         var row = document.createElement('div');
         row.className = 'user-row';
         row.innerHTML =
@@ -1007,6 +1136,32 @@
       });
     } else {
       list.innerHTML = '<div style="color:var(--dim);font-size:11px;padding:8px 0">no registered users</div>';
+    }
+
+    // Banned users
+    var banned = data.banned || [];
+    document.getElementById('banned-count').textContent = '(' + banned.length + ')';
+    if (banned.length > 0) {
+      bannedSection.style.display = 'block';
+      banned.forEach(function(u) {
+        var row = document.createElement('div');
+        row.className = 'banned-row';
+        row.innerHTML =
+          '<span>' + escHtml(u.username) + '</span>' +
+          '<button class="unban-btn" data-user="' + escHtml(u.username) + '">unban</button>';
+        row.querySelector('.unban-btn').addEventListener('click', async function(e) {
+          var uname = e.target.dataset.user;
+          await fetch('/api/admin/unban', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: uname, token: window._adminToken })
+          });
+          row.remove();
+        });
+        bannedList.appendChild(row);
+      });
+    } else {
+      bannedSection.style.display = 'none';
     }
   });
 
