@@ -717,66 +717,26 @@
     return res.json();
   }
 
-  var oldestMsgId = 0;
-  var loadingOlder = false;
-  var noMoreOlder = false;
-
   async function loadInitial() {
     try {
-      var latest = await fetch('/api/push/latest').then(function(r) { return r.json(); }).catch(function() { return null; });
-      var startId = 0;
-      if (latest && latest.id && latest.id > 50) startId = latest.id - 50;
-      var data = await fetchMessages(startId);
+      var data = await fetchMessages(0);
       loadingEl.remove();
       if (data.messages.length === 0) {
         var sys = document.createElement('div');
         sys.className = 'msg system';
         sys.innerHTML = '<span class="body">no messages yet. say hello.</span>';
         messagesEl.appendChild(sys);
-        noMoreOlder = true;
       } else {
         data.messages.forEach(function(m) { appendMessage(m); });
         lastMsgId = data.messages[data.messages.length - 1].id;
-        oldestMsgId = data.messages[0].id;
-        if (startId === 0) noMoreOlder = true;
       }
       scrollToBottom();
       setStatus(true);
       setInterval(poll, 2500);
-      // Passively load older messages in background after initial load
-      if (!noMoreOlder) setTimeout(loadOlderPassive, 1500);
     } catch(e) {
       loadingEl.textContent = 'connection error. retrying...';
       setTimeout(loadInitial, 3000);
     }
-  }
-
-  async function loadOlderPassive() {
-    if (loadingOlder || noMoreOlder || oldestMsgId <= 1) return;
-    loadingOlder = true;
-    var fetchFrom = Math.max(0, oldestMsgId - 51);
-    try {
-      var data = await fetchMessages(fetchFrom);
-      var older = data.messages.filter(function(m) { return m.id < oldestMsgId; });
-      if (older.length === 0) {
-        noMoreOlder = true;
-        loadingOlder = false;
-        return;
-      }
-      // Prepend without affecting scroll position
-      var prevHeight = messagesEl.scrollHeight;
-      var prevScroll = messagesEl.scrollTop;
-      older.reverse().forEach(function(m) {
-        messagesEl.insertBefore(buildMessageEl(m), messagesEl.firstChild);
-      });
-      // Restore scroll so user sees no jump
-      messagesEl.scrollTop = prevScroll + (messagesEl.scrollHeight - prevHeight);
-      oldestMsgId = older[0].id;
-      if (oldestMsgId <= 1 || fetchFrom === 0) noMoreOlder = true;
-    } catch(e) {}
-    loadingOlder = false;
-    // Keep loading until we have all 200
-    if (!noMoreOlder) setTimeout(loadOlderPassive, 800);
   }
 
   async function poll() {

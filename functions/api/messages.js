@@ -150,7 +150,7 @@ export async function onRequestGet({ request, env }) {
   var since = parseInt(url.searchParams.get('since') || '0', 10);
   try {
     var r = await env.DB.prepare(
-      'SELECT id, username, message, created_at, type FROM messages WHERE id > ? ORDER BY id ASC LIMIT 50'
+      'SELECT id, username, message, created_at, type FROM messages WHERE id > ? ORDER BY id ASC LIMIT 200'
     ).bind(since).all();
     return Response.json({ messages: r.results || [] });
   } catch (e) { return Response.json({ error: e.message }, { status: 500 }); }
