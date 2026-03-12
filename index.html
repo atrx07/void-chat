@@ -707,7 +707,11 @@
 
   async function loadInitial() {
     try {
-      var data = await fetchMessages(0);
+      // Get latest message ID first, then load last 50
+      var latest = await fetch('/api/push/latest').then(function(r) { return r.json(); }).catch(function() { return null; });
+      var startId = 0;
+      if (latest && latest.id && latest.id > 50) startId = latest.id - 50;
+      var data = await fetchMessages(startId);
       loadingEl.remove();
       if (data.messages.length === 0) {
         var sys = document.createElement('div');
