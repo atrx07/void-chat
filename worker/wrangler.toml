@@ -1,0 +1,22 @@
+name = "voidchat-api"
+main = "src/index.js"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "voidchat-db"
+database_id = "YOUR_D1_DATABASE_ID"   # replace after: wrangler d1 create voidchat-db
+
+[[durable_objects.bindings]]
+name = "CHAT_ROOM"
+class_name = "ChatRoom"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["ChatRoom"]
+
+# Secrets — set via: wrangler secret put <NAME>
+# FIREBASE_PROJECT_ID   your Firebase project ID
+# ADMIN_UID             Firebase UID of the admin user
+# FRONTEND_ORIGIN       https://your-pages-domain.pages.dev  (CORS)
