@@ -14,7 +14,7 @@ class_name = "ChatRoom"
 
 [[migrations]]
 tag = "v1"
-new_classes = ["ChatRoom"]
+new_sqlite_classes = ["ChatRoom"]
 
 # Secrets — set via: wrangler secret put <NAME>
 # FIREBASE_PROJECT_ID   your Firebase project ID
