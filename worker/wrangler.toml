@@ -6,7 +6,7 @@ compatibility_flags = ["nodejs_compat"]
 [[d1_databases]]
 binding = "DB"
 database_name = "voidchat-db"
-database_id = "YOUR_D1_DATABASE_ID"   # replace after: wrangler d1 create voidchat-db
+database_id = "f2208cb9-1ab5-4139-95de-2244b3abf1e9"   # replace after: wrangler d1 create voidchat-db
 
 [[durable_objects.bindings]]
 name = "CHAT_ROOM"
