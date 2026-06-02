@@ -14,7 +14,17 @@ export async function handleMessages(request, env) {
       ).bind(since).all();
       return jsonResponse({ messages: r.results || [] }, 200, env);
     } catch (e) {
-      return errorResponse(e.message, 500, env);
+          console.error('MESSAGES_POST_ERROR', {
+           message: e?.message,
+           stack: e?.stack,
+           name: e?.name,
+          });
+
+          return jsonResponse({
+           error: e?.message || String(e),
+           stack: e?.stack || null,
+           name: e?.name || null,
+          }, 500, env);
     }
   }
 
