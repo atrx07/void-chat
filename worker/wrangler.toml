@@ -9,7 +9,7 @@ invocation_logs = true
 
 [[d1_databases]]
 binding = "DB"
-database_name = "voidchat-db"
+database_name = "void-chat-db"
 database_id = "f2208cb9-1ab5-4139-95de-2244b3abf1e9"   # replace after: wrangler d1 create voidchat-db
 
 [[durable_objects.bindings]]
