@@ -1,4 +1,4 @@
-# void.chat — v2
+# void.chat — v2.
 
 Real-time global chatroom. Firebase auth (email + Google). Cloudflare Workers + D1 + Durable Objects.
 
