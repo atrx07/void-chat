@@ -12,19 +12,10 @@ export async function handleMessages(request, env) {
       const r = await env.DB.prepare(
         'SELECT id, uid, display_name, message, created_at, type FROM messages WHERE id > ? ORDER BY id ASC LIMIT 200'
       ).bind(since).all();
+
       return jsonResponse({ messages: r.results || [] }, 200, env);
     } catch (e) {
-          console.error('MESSAGES_POST_ERROR', {
-           message: e?.message,
-           stack: e?.stack,
-           name: e?.name,
-          });
-
-          return jsonResponse({
-           error: e?.message || String(e),
-           stack: e?.stack || null,
-           name: e?.name || null,
-          }, 500, env);
+      return errorResponse(e.message, 500, env);
     }
   }
 
@@ -37,7 +28,10 @@ export async function handleMessages(request, env) {
       const message = (body.message || '').trim().slice(0, 500);
       if (!message) return errorResponse('Empty message', 400, env);
 
-      const banned = await env.DB.prepare('SELECT 1 FROM banned_users WHERE uid = ?').bind(user.uid).first();
+      const banned = await env.DB.prepare(
+        'SELECT 1 FROM banned_users WHERE uid = ?'
+      ).bind(user.uid).first();
+
       if (banned) return errorResponse('You are banned', 403, env);
 
       const now = Date.now();
@@ -51,7 +45,6 @@ export async function handleMessages(request, env) {
         'DELETE FROM messages WHERE id NOT IN (SELECT id FROM messages ORDER BY id DESC LIMIT 200)'
       ).run();
 
-      // Broadcast to all connected WebSocket clients via Durable Object
       const newMsg = {
         id: result.meta?.last_row_id,
         uid: user.uid,
@@ -65,16 +58,33 @@ export async function handleMessages(request, env) {
       try {
         const roomId = env.CHAT_ROOM.idFromName('global');
         const room = env.CHAT_ROOM.get(roomId);
+
         await room.fetch(new Request('http://do/broadcast', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ type: 'message', message: newMsg }),
         }));
-      } catch (_) { /* non-fatal — WS broadcast best-effort */ }
+      } catch (broadcastError) {
+        console.error('MESSAGES_BROADCAST_ERROR', {
+          message: broadcastError?.message,
+          stack: broadcastError?.stack,
+          name: broadcastError?.name,
+        });
+      }
 
       return jsonResponse({ ok: true, message: newMsg }, 200, env);
     } catch (e) {
-      return errorResponse(e.message, 500, env);
+      console.error('MESSAGES_POST_ERROR', {
+        message: e?.message,
+        stack: e?.stack,
+        name: e?.name,
+      });
+
+      return jsonResponse({
+        error: e?.message || String(e),
+        stack: e?.stack || null,
+        name: e?.name || null,
+      }, 500, env);
     }
   }
 
