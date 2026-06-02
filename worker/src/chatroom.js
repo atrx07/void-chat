@@ -24,7 +24,7 @@ export class ChatRoom {
       const displayName = url.searchParams.get('name') || 'user';
 
       const [client, server] = Object.values(new WebSocketPair());
-      server.accept();
+      this.state.acceptWebSocket(server, [uid]);
 
       const session = { uid, displayName };
       this.sessions.set(server, session);
