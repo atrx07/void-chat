@@ -16,6 +16,10 @@ class_name = "ChatRoom"
 tag = "v1"
 new_sqlite_classes = ["ChatRoom"]
 
+[vars]
+FIREBASE_PROJECT_ID = "void-chat-a504a"
+FRONTEND_ORIGIN = "https://voidchat-atrx.pages.dev"
+ADMIN_UID = "FpJ66SjlqNaITqLXpUws5e7Toc82"
 # Secrets — set via: wrangler secret put <NAME>
 # FIREBASE_PROJECT_ID   your Firebase project ID
 # ADMIN_UID             Firebase UID of the admin user
