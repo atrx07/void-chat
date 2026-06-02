@@ -833,6 +833,7 @@ async function initChat(user) {
 }
 
 function teardownChat() {
+  clearWsHeartbeat();
   if (ws) { try { ws.close(); } catch {} ws = null; }
   if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
   messagesEl.innerHTML = '<div id="loading">loading messages...</div>';
@@ -877,6 +878,46 @@ async function loadHistory() {
 // WebSocket connection
 // ─────────────────────────────────────────────────────────────
 let wsFailCount = 0;
+let wsHeartbeatTimer = null;
+let lastPongAt = 0;
+let lastWsMessageAt = 0;
+
+function clearWsHeartbeat() {
+  if (wsHeartbeatTimer) {
+    clearInterval(wsHeartbeatTimer);
+    wsHeartbeatTimer = null;
+  }
+}
+
+async function catchUpMessages() {
+  if (!currentUser) return;
+
+  try {
+    const token = await getToken();
+    const res = await fetch(API_BASE + '/api/messages?since=' + encodeURIComponent(lastMsgId || 0), {
+      headers: { 'Authorization': 'Bearer ' + token },
+    });
+
+    if (!res.ok) return;
+
+    const data = await res.json();
+    const messages = data.messages || [];
+    if (!messages.length) return;
+
+    const atBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 80;
+
+    messages.forEach(m => {
+      if (m.id > lastMsgId) {
+        appendMessage(m);
+        lastMsgId = m.id;
+      }
+    });
+
+    if (atBottom) scrollToBottom();
+  } catch (e) {
+    console.warn('catchUpMessages failed', e);
+  }
+}
 
 async function connectWS() {
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
@@ -896,15 +937,38 @@ async function connectWS() {
   ws.addEventListener('open', () => {
     wsReady = true;
     wsFailCount = 0;
+    lastPongAt = Date.now();
+    lastWsMessageAt = Date.now();
+
     wsStatusEl.textContent = 'connected';
     wsStatusEl.className = 'connected';
-    // Heartbeat ping every 25s to keep connection alive through CF
-    ws._pingInterval = setInterval(() => {
-      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
-    }, 25000);
+
+    clearWsHeartbeat();
+
+    wsHeartbeatTimer = setInterval(() => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+      const now = Date.now();
+
+      // If the server has not answered pings, treat this socket as dead.
+      if (now - lastPongAt > 15000) {
+        console.warn('WS heartbeat timeout; reconnecting');
+        try { ws.close(); } catch {}
+        return;
+      }
+
+      try {
+        ws.send(JSON.stringify({ type: 'ping' }));
+      } catch {
+        try { ws.close(); } catch {}
+      }
+    }, 5000);
+
+    catchUpMessages();
   });
 
   ws.addEventListener('message', (event) => {
+    lastWsMessageAt = Date.now();
     let msg;
     try { msg = JSON.parse(event.data); } catch { return; }
     handleWsMessage(msg);
@@ -912,9 +976,11 @@ async function connectWS() {
 
   ws.addEventListener('close', () => {
     wsReady = false;
-    clearInterval(ws?._pingInterval);
+    clearWsHeartbeat();
+
     wsStatusEl.textContent = 'reconnecting...';
     wsStatusEl.className = 'reconnecting';
+
     scheduleReconnect();
   });
 
@@ -963,7 +1029,9 @@ function handleWsMessage(msg) {
       updateOnlineBadge(msg.onlineCount);
       break;
     }
-    case 'pong': break;
+    case 'pong':
+      lastPongAt = Date.now();
+      break;
   }
 }
 
@@ -1034,8 +1102,16 @@ async function sendMessage() {
       const d = await res.json();
       inputEl.value = text; // restore on error
       if (d.error === 'You are banned') appendSystemMsg('you have been banned.');
+      return;
     }
-    // Message will appear via WebSocket broadcast — no need to append manually
+
+    // Fast fallback: if WebSocket misses the broadcast, REST catches it immediately.
+    const d = await res.json();
+    if (d.message && d.message.id > lastMsgId) {
+      appendMessage(d.message);
+      lastMsgId = d.message.id;
+      scrollToBottom();
+    }
   } catch (e) {
     inputEl.value = text;
   } finally {
@@ -1252,6 +1328,13 @@ if (window.visualViewport) {
 setInterval(async () => {
   if (currentUser) await getToken(true);
 }, 55 * 60 * 1000);
+
+// Safety net for mobile browsers that silently freeze WebSockets.
+// This keeps the UI live even if the socket misses an event.
+setInterval(() => {
+  if (!currentUser) return;
+  catchUpMessages();
+}, 12000);
 </script>
 </body>
 </html>
