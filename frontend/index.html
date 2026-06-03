@@ -833,7 +833,6 @@ async function initChat(user) {
 }
 
 function teardownChat() {
-  clearWsHeartbeat();
   if (ws) { try { ws.close(); } catch {} ws = null; }
   if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
   messagesEl.innerHTML = '<div id="loading">loading messages...</div>';
@@ -878,46 +877,6 @@ async function loadHistory() {
 // WebSocket connection
 // ─────────────────────────────────────────────────────────────
 let wsFailCount = 0;
-let wsHeartbeatTimer = null;
-let lastPongAt = 0;
-let lastWsMessageAt = 0;
-
-function clearWsHeartbeat() {
-  if (wsHeartbeatTimer) {
-    clearInterval(wsHeartbeatTimer);
-    wsHeartbeatTimer = null;
-  }
-}
-
-async function catchUpMessages() {
-  if (!currentUser) return;
-
-  try {
-    const token = await getToken();
-    const res = await fetch(API_BASE + '/api/messages?since=' + encodeURIComponent(lastMsgId || 0), {
-      headers: { 'Authorization': 'Bearer ' + token },
-    });
-
-    if (!res.ok) return;
-
-    const data = await res.json();
-    const messages = data.messages || [];
-    if (!messages.length) return;
-
-    const atBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 80;
-
-    messages.forEach(m => {
-      if (m.id > lastMsgId) {
-        appendMessage(m);
-        lastMsgId = m.id;
-      }
-    });
-
-    if (atBottom) scrollToBottom();
-  } catch (e) {
-    console.warn('catchUpMessages failed', e);
-  }
-}
 
 async function connectWS() {
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
@@ -937,38 +896,15 @@ async function connectWS() {
   ws.addEventListener('open', () => {
     wsReady = true;
     wsFailCount = 0;
-    lastPongAt = Date.now();
-    lastWsMessageAt = Date.now();
-
     wsStatusEl.textContent = 'connected';
     wsStatusEl.className = 'connected';
-
-    clearWsHeartbeat();
-
-    wsHeartbeatTimer = setInterval(() => {
-      if (!ws || ws.readyState !== WebSocket.OPEN) return;
-
-      const now = Date.now();
-
-      // If the server has not answered pings, treat this socket as dead.
-      if (now - lastPongAt > 15000) {
-        console.warn('WS heartbeat timeout; reconnecting');
-        try { ws.close(); } catch {}
-        return;
-      }
-
-      try {
-        ws.send(JSON.stringify({ type: 'ping' }));
-      } catch {
-        try { ws.close(); } catch {}
-      }
-    }, 5000);
-
-    catchUpMessages();
+    // Heartbeat ping every 25s to keep connection alive through CF
+    ws._pingInterval = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
+    }, 25000);
   });
 
   ws.addEventListener('message', (event) => {
-    lastWsMessageAt = Date.now();
     let msg;
     try { msg = JSON.parse(event.data); } catch { return; }
     handleWsMessage(msg);
@@ -976,11 +912,9 @@ async function connectWS() {
 
   ws.addEventListener('close', () => {
     wsReady = false;
-    clearWsHeartbeat();
-
+    clearInterval(ws?._pingInterval);
     wsStatusEl.textContent = 'reconnecting...';
     wsStatusEl.className = 'reconnecting';
-
     scheduleReconnect();
   });
 
@@ -1029,9 +963,7 @@ function handleWsMessage(msg) {
       updateOnlineBadge(msg.onlineCount);
       break;
     }
-    case 'pong':
-      lastPongAt = Date.now();
-      break;
+    case 'pong': break;
   }
 }
 
@@ -1102,16 +1034,8 @@ async function sendMessage() {
       const d = await res.json();
       inputEl.value = text; // restore on error
       if (d.error === 'You are banned') appendSystemMsg('you have been banned.');
-      return;
     }
-
-    // Fast fallback: if WebSocket misses the broadcast, REST catches it immediately.
-    const d = await res.json();
-    if (d.message && d.message.id > lastMsgId) {
-      appendMessage(d.message);
-      lastMsgId = d.message.id;
-      scrollToBottom();
-    }
+    // Message will appear via WebSocket broadcast — no need to append manually
   } catch (e) {
     inputEl.value = text;
   } finally {
@@ -1147,13 +1071,17 @@ document.querySelectorAll('.sidebar-tab').forEach(tab => {
     document.querySelectorAll('.sidebar-panel').forEach(p => p.classList.remove('active'));
     tab.classList.add('active');
     document.getElementById('panel-' + tab.dataset.tab).classList.add('active');
+
+    if (tab.dataset.tab === 'online') {
+      refreshOnlineList();
+    }
   });
 });
 
 // ─────────────────────────────────────────────────────────────
 // Online list (fetched from DO when sidebar opens)
 // ─────────────────────────────────────────────────────────────
-async function refreshOnlineList() {
+async function refreshOnlineList(skipAutoRefresh = false) {
   try {
     const token = await getToken();
     const res   = await fetch(API_BASE + '/api/online', {
@@ -1161,7 +1089,7 @@ async function refreshOnlineList() {
     });
     const data  = await res.json();
     const users = data.users || [];
-    updateOnlineBadge(users.length);
+    updateOnlineBadge(users.length, skipAutoRefresh);
     const list = document.getElementById('online-list');
     list.innerHTML = '';
     if (!users.length) {
@@ -1186,11 +1114,37 @@ setInterval(async () => {
       method: 'POST',
       headers: { 'Authorization': 'Bearer ' + token },
     });
+
+    if (isOnlinePanelOpen()) {
+      await refreshOnlineList(true);
+    }
   } catch {}
 }, 15000);
 
-function updateOnlineBadge(count) {
+function isOnlinePanelOpen() {
+  return sidebar.classList.contains('open')
+    && document.getElementById('panel-online')?.classList.contains('active');
+}
+
+function updateOnlineBadge(count, skipListRefresh = false) {
   document.getElementById('online-count-badge').textContent = count || 0;
+
+  if (skipListRefresh || !isOnlinePanelOpen()) return;
+
+  if (refreshOnlineList._scheduled || refreshOnlineList._busy) return;
+  refreshOnlineList._scheduled = true;
+
+  setTimeout(async () => {
+    refreshOnlineList._scheduled = false;
+    if (!isOnlinePanelOpen() || refreshOnlineList._busy) return;
+
+    refreshOnlineList._busy = true;
+    try {
+      await refreshOnlineList(true);
+    } finally {
+      refreshOnlineList._busy = false;
+    }
+  }, 500);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1328,13 +1282,6 @@ if (window.visualViewport) {
 setInterval(async () => {
   if (currentUser) await getToken(true);
 }, 55 * 60 * 1000);
-
-// Safety net for mobile browsers that silently freeze WebSockets.
-// This keeps the UI live even if the socket misses an event.
-setInterval(() => {
-  if (!currentUser) return;
-  catchUpMessages();
-}, 12000);
 </script>
 </body>
 </html>
