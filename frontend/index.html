@@ -1076,12 +1076,24 @@ async function sendMessage() {
   }
 }
 
-// Keep the keyboard open on mobile: prevent the send button from stealing focus.
-sendBtn.addEventListener('pointerdown', e => e.preventDefault());
-sendBtn.addEventListener('touchstart', e => e.preventDefault(), { passive: false });
-sendBtn.addEventListener('mousedown', e => e.preventDefault());
+// Send button handling.
+// Android may drop the keyboard when a button steals focus, so touchend handles mobile taps
+// and suppresses the follow-up synthetic click. Desktop still uses normal click.
+let sendTouchHandledAt = 0;
 
-sendBtn.addEventListener('click', sendMessage);
+sendBtn.addEventListener('touchend', e => {
+  e.preventDefault();
+  sendTouchHandledAt = Date.now();
+  try { inputEl.focus({ preventScroll: true }); }
+  catch { inputEl.focus(); }
+  sendMessage();
+}, { passive: false });
+
+sendBtn.addEventListener('click', e => {
+  if (Date.now() - sendTouchHandledAt < 700) return;
+  sendMessage();
+});
+
 inputEl.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) sendMessage(); });
 
 // ─────────────────────────────────────────────────────────────
