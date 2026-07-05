@@ -711,6 +711,7 @@ let wsReady       = false;
 let wsReconnectTimer = null;
 let lastMsgId     = 0;
 let lastSenderId  = null;   // for collapsing consecutive messages
+let pollTimer     = null;   // fallback polling interval
 
 const messagesEl  = document.getElementById('messages');
 const inputEl     = document.getElementById('msg-input');
@@ -838,6 +839,47 @@ function firebaseErrMsg(code) {
 }
 
 // ─────────────────────────────────────────────────────────────
+// Fallback polling — runs alongside WS, catches anything missed
+// ─────────────────────────────────────────────────────────────
+async function pollForMessages() {
+  if (!currentUser || lastMsgId === 0) return;
+  try {
+    const token = await getToken(false);
+    const res = await fetch(API_BASE + '/api/messages?since=' + lastMsgId, {
+      headers: { 'Authorization': 'Bearer ' + token },
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    const msgs = data.messages || [];
+    if (!msgs.length) return;
+    const atBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 80;
+    let appended = false;
+    msgs.forEach(m => {
+      if (m.id <= lastMsgId) return;
+      // Skip if already rendered optimistically (same id)
+      if (messagesEl.querySelector('.msg[data-id="' + m.id + '"]')) {
+        lastMsgId = m.id;
+        return;
+      }
+      appendMessage(m);
+      lastMsgId = m.id;
+      appended = true;
+    });
+    if (appended && atBottom) scrollToBottom();
+  } catch {}
+}
+
+function startPolling() {
+  stopPolling();
+  // Poll every 3 s — cheap enough, only fetches rows newer than lastMsgId
+  pollTimer = setInterval(pollForMessages, 3000);
+}
+
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+}
+
+// ─────────────────────────────────────────────────────────────
 // Chat init / teardown
 // ─────────────────────────────────────────────────────────────
 async function initChat(user) {
@@ -851,9 +893,10 @@ async function initChat(user) {
   document.getElementById('user-card-name').innerHTML = '<span style="color:' + color + '">' + escHtml(displayName) + '</span>';
   document.getElementById('user-card-email').textContent = user.email || '';
 
-  // Load history, then open WebSocket
+  // Load history, then open WebSocket + start polling fallback
   await loadHistory();
   connectWS();
+  startPolling();
 
   // Enable input
   inputEl.disabled  = false;
@@ -863,6 +906,7 @@ async function initChat(user) {
 function teardownChat() {
   if (ws) { try { ws.close(); } catch {} ws = null; }
   if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
+  stopPolling();
   messagesEl.innerHTML = '<div id="loading">loading messages...</div>';
   lastMsgId    = 0;
   lastSenderId = null;
@@ -1135,6 +1179,23 @@ async function sendMessage() {
   inputEl.value = '';
   sendBtn.disabled = true;
 
+  // ── Optimistic render ─────────────────────────────────────
+  // Show the message immediately with a temp id so the user sees
+  // it right away. The real row (with the real id) will arrive via
+  // WS broadcast or the polling fallback; we reconcile by replacing
+  // the temp element then.
+  const tempId = 'temp-' + Date.now();
+  const optimisticMsg = {
+    id: tempId,
+    uid: currentUser.uid,
+    display_name: currentUser.displayName || currentUser.email?.split('@')[0] || 'user',
+    message: text,
+    created_at: Date.now(),
+    type: 'chat',
+  };
+  appendMessage(optimisticMsg);
+  scrollToBottom();
+
   try {
     const token = await getToken();
     const res   = await fetch(API_BASE + '/api/messages', {
@@ -1142,13 +1203,27 @@ async function sendMessage() {
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
       body: JSON.stringify({ message: text }),
     });
-    if (!res.ok) {
+    if (res.ok) {
+      const data = await res.json();
+      const realId = data.message?.id;
+      if (realId) {
+        // Swap temp element's data-id to the real id so dedup logic
+        // in handleWsMessage / pollForMessages won't double-render it.
+        const tempEl = messagesEl.querySelector('.msg[data-id="' + tempId + '"]');
+        if (tempEl) tempEl.dataset.id = realId;
+        if (realId > lastMsgId) lastMsgId = realId;
+      }
+    } else {
       const d = await res.json();
-      inputEl.value = text; // restore on error
+      // Remove the optimistic bubble on failure
+      const tempEl = messagesEl.querySelector('.msg[data-id="' + tempId + '"]');
+      if (tempEl) tempEl.remove();
+      inputEl.value = text; // restore
       if (d.error === 'You are banned') appendSystemMsg('you have been banned.');
     }
-    // Message will appear via WebSocket broadcast — no need to append manually
   } catch (e) {
+    const tempEl = messagesEl.querySelector('.msg[data-id="' + tempId + '"]');
+    if (tempEl) tempEl.remove();
     inputEl.value = text;
   } finally {
     sendBtn.disabled = false;
