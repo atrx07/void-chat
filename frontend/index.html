@@ -904,7 +904,63 @@ async function loadHistory() {
 // ─────────────────────────────────────────────────────────────
 // WebSocket connection
 // ─────────────────────────────────────────────────────────────
-let wsFailCount = 0;
+let wsFailCount    = 0;
+let wsLastActivity = 0; // timestamp of last ping/pong/message received
+let wsWatchdogTimer = null;
+
+// ── Staleness watchdog ────────────────────────────────────────
+// If nothing comes from the server in 45 s the connection is silently
+// dead (browser throttled it in background). Force a hard reconnect.
+const WS_STALE_MS = 45_000;
+
+function resetWatchdog() {
+  wsLastActivity = Date.now();
+  clearTimeout(wsWatchdogTimer);
+  wsWatchdogTimer = setTimeout(() => {
+    // Connection has been quiet for too long — tear it down and reconnect.
+    if (ws) {
+      try { ws.close(); } catch {}
+      ws = null;
+    }
+    wsReady = false;
+    if (currentUser) {
+      wsStatusEl.textContent = 'reconnecting...';
+      wsStatusEl.className = 'reconnecting';
+      catchUpAndReconnect();
+    }
+  }, WS_STALE_MS);
+}
+
+function clearWatchdog() {
+  clearTimeout(wsWatchdogTimer);
+  wsWatchdogTimer = null;
+}
+
+// ── Catch-up fetch + reconnect ────────────────────────────────
+// Called whenever we know the WS went dark. Fetches any messages
+// missed during the silent period before opening a fresh socket.
+async function catchUpAndReconnect() {
+  if (lastMsgId > 0) {
+    try {
+      const token = await getToken(false);
+      const res = await fetch(API_BASE + '/api/messages?since=' + lastMsgId, {
+        headers: { 'Authorization': 'Bearer ' + token },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const msgs = data.messages || [];
+        const atBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 80;
+        msgs.forEach(m => {
+          if (m.id <= lastMsgId) return;
+          appendMessage(m);
+          lastMsgId = m.id;
+        });
+        if (msgs.length && atBottom) scrollToBottom();
+      }
+    } catch {}
+  }
+  connectWS();
+}
 
 async function connectWS() {
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
@@ -926,13 +982,18 @@ async function connectWS() {
     wsFailCount = 0;
     wsStatusEl.textContent = 'connected';
     wsStatusEl.className = 'connected';
-    // Heartbeat ping every 25s to keep connection alive through CF
+    resetWatchdog(); // start staleness timer
+
+    // Heartbeat ping every 20 s — keeps CF alive and resets the watchdog
     ws._pingInterval = setInterval(() => {
-      if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'ping' }));
-    }, 25000);
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'ping' }));
+      }
+    }, 20_000);
   });
 
   ws.addEventListener('message', (event) => {
+    resetWatchdog(); // any inbound frame proves the connection is live
     let msg;
     try { msg = JSON.parse(event.data); } catch { return; }
     handleWsMessage(msg);
@@ -941,6 +1002,7 @@ async function connectWS() {
   ws.addEventListener('close', () => {
     wsReady = false;
     clearInterval(ws?._pingInterval);
+    clearWatchdog();
     wsStatusEl.textContent = 'reconnecting...';
     wsStatusEl.className = 'reconnecting';
     scheduleReconnect();
@@ -950,6 +1012,7 @@ async function connectWS() {
     wsFailCount++;
     wsStatusEl.textContent = 'error';
     wsStatusEl.className = 'error';
+    clearWatchdog();
   });
 }
 
@@ -960,6 +1023,27 @@ function scheduleReconnect() {
     if (currentUser) connectWS();
   }, delay);
 }
+
+// ── Page-visibility reconnect ─────────────────────────────────
+// When the user switches back to this tab (or unlocks their phone),
+// check whether the WS is still alive. If it's gone or stale, reconnect
+// and fetch any messages that arrived while we were hidden.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden || !currentUser) return;
+
+  const stale = !ws
+    || ws.readyState === WebSocket.CLOSED
+    || ws.readyState === WebSocket.CLOSING
+    || (wsLastActivity > 0 && Date.now() - wsLastActivity > WS_STALE_MS);
+
+  if (stale) {
+    if (ws) { try { ws.close(); } catch {} ws = null; }
+    wsReady = false;
+    wsStatusEl.textContent = 'reconnecting...';
+    wsStatusEl.className = 'reconnecting';
+    catchUpAndReconnect();
+  }
+});
 
 // ─────────────────────────────────────────────────────────────
 // Handle incoming WS events
@@ -991,7 +1075,7 @@ function handleWsMessage(msg) {
       updateOnlineBadge(msg.onlineCount);
       break;
     }
-    case 'pong': break;
+    case 'pong': resetWatchdog(); break;
   }
 }
 
@@ -1301,6 +1385,18 @@ if (window.visualViewport) {
 setInterval(async () => {
   if (currentUser) await getToken(true);
 }, 55 * 60 * 1000);
+
+// ── Periodic WS health check ──────────────────────────────────
+// Belt-and-suspenders: every 30 s check the socket is truly open.
+// This catches the rare case where neither close/error nor the watchdog
+// fired (e.g. a very long background freeze with no ping opportunity).
+setInterval(() => {
+  if (!currentUser) return;
+  if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
+    wsReady = false;
+    catchUpAndReconnect();
+  }
+}, 30_000);
 </script>
 </body>
 </html>
