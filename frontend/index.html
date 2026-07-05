@@ -1007,7 +1007,12 @@ async function catchUpAndReconnect() {
 }
 
 async function connectWS() {
-  if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    wsStatusEl.textContent = 'connected';
+    wsStatusEl.className = 'connected';
+    return;
+  }
+  if (ws && ws.readyState === WebSocket.CONNECTING) return;
 
   wsStatusEl.textContent = 'connecting...';
   wsStatusEl.className = 'reconnecting';
@@ -1463,10 +1468,18 @@ setInterval(async () => {
 
 // ── Periodic WS health check ──────────────────────────────────
 // Belt-and-suspenders: every 30 s check the socket is truly open.
-// This catches the rare case where neither close/error nor the watchdog
-// fired (e.g. a very long background freeze with no ping opportunity).
+// Also corrects any stuck status label (e.g. "reconnecting" stuck on
+// desktop when the socket is actually fine).
 setInterval(() => {
   if (!currentUser) return;
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    // Socket is healthy — make sure the label reflects that
+    if (wsStatusEl.className !== 'connected') {
+      wsStatusEl.textContent = 'connected';
+      wsStatusEl.className = 'connected';
+    }
+    return;
+  }
   if (!ws || ws.readyState === WebSocket.CLOSED || ws.readyState === WebSocket.CLOSING) {
     wsReady = false;
     catchUpAndReconnect();
