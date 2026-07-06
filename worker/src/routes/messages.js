@@ -32,7 +32,8 @@ export async function handleMessages(request, env) {
 
     try {
       const body = await request.json();
-      const message = (body.message || '').trim().slice(0, 500);
+      const message  = (body.message || '').trim().slice(0, 500);
+      const clientId = (body.clientId || '').slice(0, 80) || null;
       if (!message) return errorResponse('Empty message', 400, env);
 
       const banned = await env.DB.prepare(
@@ -42,7 +43,14 @@ export async function handleMessages(request, env) {
       if (banned) return errorResponse('You are banned', 403, env);
 
       const now = Date.now();
-      const displayName = user.name || user.email?.split('@')[0] || 'user';
+
+      // Fetch the sender's saved profile (display name override + color)
+      const profile = await env.DB.prepare(
+        'SELECT display_name, name_color FROM user_profiles WHERE uid = ?'
+      ).bind(user.uid).first();
+
+      const nameColor   = profile?.name_color   || null;
+      const displayName = profile?.display_name || user.name || user.email?.split('@')[0] || 'user';
 
       const result = await env.DB.prepare(
         'INSERT INTO messages (uid, display_name, message, created_at, type) VALUES (?, ?, ?, ?, ?)'
@@ -61,6 +69,7 @@ export async function handleMessages(request, env) {
         created_at: now,
         type: 'chat',
         isAdmin: isAdmin(user, env),
+        ...(clientId ? { clientId } : {}),
       };
 
       try {

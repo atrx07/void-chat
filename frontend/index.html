@@ -950,12 +950,12 @@ async function pollForMessages() {
     let appended = false;
     msgs.forEach(m => {
       if (m.id <= lastMsgId) return;
-      // Already rendered with real id
+      // Already rendered with real id — dedupe
       if (messagesEl.querySelector('.msg[data-id="' + m.id + '"]')) {
         lastMsgId = m.id;
         return;
       }
-      // Already rendered optimistically — just swap the id, don't re-append
+      // Already rendered optimistically — swap the id, don't re-append
       if (reconcileOptimistic(m)) {
         lastMsgId = m.id;
         return;
@@ -1128,6 +1128,16 @@ async function catchUpAndReconnect() {
         const atBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 80;
         msgs.forEach(m => {
           if (m.id <= lastMsgId) return;
+          // Dedupe: already in DOM with real id
+          if (messagesEl.querySelector('.msg[data-id="' + m.id + '"]')) {
+            lastMsgId = m.id;
+            return;
+          }
+          // Reconcile optimistic element if present
+          if (reconcileOptimistic(m)) {
+            lastMsgId = m.id;
+            return;
+          }
           appendMessage(m);
           lastMsgId = m.id;
         });
@@ -1234,6 +1244,11 @@ function handleWsMessage(msg) {
     case 'message': {
       if (msg.message.id <= lastMsgId) return;
       const atBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 80;
+      // Dedupe: already rendered via REST poll/history with the real id
+      if (messagesEl.querySelector('.msg[data-id="' + msg.message.id + '"]')) {
+        lastMsgId = msg.message.id;
+        break;
+      }
       // If we already rendered this optimistically (temp element), just swap the
       // id and update lastMsgId — don't append a second copy which would hide its header.
       if (reconcileOptimistic(msg.message)) {
@@ -1248,7 +1263,7 @@ function handleWsMessage(msg) {
     }
     case 'delete': {
       const el = messagesEl.querySelector('.msg[data-id="' + msg.messageId + '"]');
-      if (el) el.remove();
+      if (el) { el.remove(); recalcLastSenderId(); }
       break;
     }
     case 'clear': {
@@ -1270,19 +1285,42 @@ function handleWsMessage(msg) {
 // Message rendering — new layout
 // ─────────────────────────────────────────────────────────────
 
-// Find a temp-* element that belongs to us with the same text and swap its
-// data-id to the real server id. Returns true if a match was found so the
-// caller knows NOT to call appendMessage (which would duplicate the message
-// and, worse, hide its header via the same-user collapse logic).
+// Recalculate lastSenderId by inspecting the actual DOM state.
+// Call this after removing any optimistic/temp message so that the next
+// real message knows whether to show a name header.
+function recalcLastSenderId() {
+  // Walk children in reverse; skip system/announce nodes which have no uid
+  const children = messagesEl.children;
+  for (let i = children.length - 1; i >= 0; i--) {
+    const el = children[i];
+    if (el.classList.contains('system') || el.classList.contains('announce')) continue;
+    lastSenderId = el.dataset.uid || null;
+    return;
+  }
+  lastSenderId = null;
+}
+
+// Replace a temp element with the server-confirmed id using the stable clientId.
+// Returns true if matched so the caller skips appendMessage (no duplicate).
 function reconcileOptimistic(serverMsg) {
   // Only our own messages get optimistic elements
   if (serverMsg.uid !== currentUser?.uid) return false;
-  // Look for any temp element from this user with matching text
+
+  // Primary: match by clientId embedded in the temp element's data-client-id attr
+  if (serverMsg.clientId) {
+    const el = messagesEl.querySelector('.msg[data-client-id="' + serverMsg.clientId + '"]');
+    if (el) {
+      el.dataset.id = serverMsg.id;
+      return true;
+    }
+  }
+
+  // Fallback: match by temp-* id prefix (for paths that don't carry clientId back)
   const temps = messagesEl.querySelectorAll('.msg[data-id^="temp-"]');
   for (const el of temps) {
     const bodyEl = el.querySelector('.msg-body');
     if (bodyEl && bodyEl.textContent === serverMsg.message) {
-      el.dataset.id = serverMsg.id;      // swap temp id → real id
+      el.dataset.id = serverMsg.id;
       return true;
     }
   }
@@ -1303,7 +1341,8 @@ function appendMessage(msg) {
     (isAnnounce ? ' announce' : '') +
     (isMe && !isAnnounce ? ' is-me' : '') +
     (sameUser ? ' same-user' : '');
-  div.dataset.id = msg.id;
+  div.dataset.id  = msg.id;
+  div.dataset.uid = msg.uid || '';
 
   div.innerHTML =
     '<div class="msg-header">' +
@@ -1349,17 +1388,21 @@ async function sendMessage() {
   inputEl.setAttribute('autocomplete', 'off');
   sendBtn.disabled = true;
 
-  const tempId = 'temp-' + Date.now();
+  const clientId = 'temp-' + Date.now() + '-' + Math.random().toString(36).slice(2);
   const optimisticMsg = {
-    id: tempId,
+    id: clientId,
     uid: currentUser.uid,
     display_name: userProfile.display_name || currentUser.displayName || currentUser.email?.split('@')[0] || 'user',
     name_color: userProfile.name_color || null,
     message: text,
     created_at: Date.now(),
     type: 'chat',
+    clientId,
   };
   appendMessage(optimisticMsg);
+  // Stamp the stable clientId on the DOM node for reliable reconciliation
+  const tempEl = messagesEl.querySelector('.msg[data-id="' + clientId + '"]');
+  if (tempEl) tempEl.dataset.clientId = clientId;
   scrollToBottom();
 
   let failed = false;
@@ -1368,28 +1411,30 @@ async function sendMessage() {
     const res   = await fetch(API_BASE + '/api/messages', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
-      body: JSON.stringify({ message: text }),
+      body: JSON.stringify({ message: text, clientId }),
     });
     if (res.ok) {
       const data = await res.json();
       const realId = data.message?.id;
       if (realId) {
-        const tempEl = messagesEl.querySelector('.msg[data-id="' + tempId + '"]');
-        if (tempEl) tempEl.dataset.id = realId;
+        // Swap temp id → real id on the optimistic element
+        const el = messagesEl.querySelector('.msg[data-client-id="' + clientId + '"]');
+        if (el) el.dataset.id = String(realId);
         if (realId > lastMsgId) lastMsgId = realId;
+        // Prevent WS echo from duplicating: dedupe guard is data-id which is now the real id
       }
     } else {
       failed = true;
       const d = await res.json();
-      const tempEl = messagesEl.querySelector('.msg[data-id="' + tempId + '"]');
-      if (tempEl) tempEl.remove();
+      const el = messagesEl.querySelector('.msg[data-client-id="' + clientId + '"]');
+      if (el) { el.remove(); recalcLastSenderId(); }
       if (d.error === 'You are banned') appendSystemMsg('you have been banned.');
       else inputEl.value = text; // restore text only on real errors
     }
   } catch (e) {
     failed = true;
-    const tempEl = messagesEl.querySelector('.msg[data-id="' + tempId + '"]');
-    if (tempEl) tempEl.remove();
+    const el = messagesEl.querySelector('.msg[data-client-id="' + clientId + '"]');
+    if (el) { el.remove(); recalcLastSenderId(); }
     inputEl.value = text;
   }
 
