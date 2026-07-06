@@ -359,9 +359,11 @@
     /* ─── MAIN CHAT APP ───────────────────────────────────────── */
     #app {
       position: fixed;
-      inset: 0;
+      /* top/height are controlled by syncViewportHeight() in JS
+         so the app shrinks exactly to the visible area above the keyboard */
+      top: 0; left: 0; right: 0;
+      height: 100dvh;
       display: flex; flex-direction: column;
-      height: var(--app-height, 100dvh);
       max-width: 720px; margin: 0 auto;
       padding-bottom: env(safe-area-inset-bottom);
       overflow: hidden;
@@ -790,16 +792,38 @@ const myNameEl    = document.getElementById('my-name-display');
 const loadingEl   = document.getElementById('loading');
 const authScreen  = document.getElementById('auth-screen');
 
-// Keep the app locked to the visible viewport on mobile keyboards.
-// Android Chrome/Brave can otherwise shove the top bar out of view.
+// ── Viewport / keyboard layout ───────────────────────────────
+// On mobile, when the software keyboard appears the visualViewport
+// shrinks. We use that to set the app height AND offset the app
+// down by visualViewport.offsetTop so it stays flush under the
+// status bar. This is the standard pattern for "keyboard pushes
+// chat up, not the whole page" behaviour.
+const appEl = document.getElementById('app');
+
 function syncViewportHeight() {
-  const h = window.visualViewport?.height || window.innerHeight;
+  const vv = window.visualViewport;
+  const h  = vv ? vv.height  : window.innerHeight;
+  const t  = vv ? vv.offsetTop : 0;
   document.documentElement.style.setProperty('--app-height', h + 'px');
+  // Shift the app to start exactly at the viewport top (handles iOS Safari bounce)
+  if (appEl) {
+    appEl.style.height = h + 'px';
+    appEl.style.top    = t + 'px';
+  }
 }
+
 syncViewportHeight();
 window.addEventListener('resize', syncViewportHeight);
 if (window.visualViewport) {
-  window.visualViewport.addEventListener('resize', syncViewportHeight);
+  window.visualViewport.addEventListener('resize', () => {
+    syncViewportHeight();
+    // When keyboard closes, scroll back to bottom so last message is visible
+    const vv = window.visualViewport;
+    const prev = parseFloat(appEl?.style.height || '0');
+    requestAnimationFrame(() => {
+      if (vv && vv.height > prev) scrollToBottom();
+    });
+  });
   window.visualViewport.addEventListener('scroll', syncViewportHeight);
 }
 
@@ -1283,14 +1307,13 @@ function scrollToBottom() {
 async function sendMessage() {
   const text = inputEl.value.trim();
   if (!text || !currentUser) return;
+
+  // Clear synchronously and keep a guard so autocomplete/autofill
+  // can't restore the old value while the async fetch is in flight.
   inputEl.value = '';
+  inputEl.setAttribute('autocomplete', 'off');
   sendBtn.disabled = true;
 
-  // ── Optimistic render ─────────────────────────────────────
-  // Show the message immediately with a temp id so the user sees
-  // it right away. The real row (with the real id) will arrive via
-  // WS broadcast or the polling fallback; we reconcile by replacing
-  // the temp element then.
   const tempId = 'temp-' + Date.now();
   const optimisticMsg = {
     id: tempId,
@@ -1304,6 +1327,7 @@ async function sendMessage() {
   appendMessage(optimisticMsg);
   scrollToBottom();
 
+  let failed = false;
   try {
     const token = await getToken();
     const res   = await fetch(API_BASE + '/api/messages', {
@@ -1315,30 +1339,38 @@ async function sendMessage() {
       const data = await res.json();
       const realId = data.message?.id;
       if (realId) {
-        // Swap temp element's data-id to the real id so dedup logic
-        // in handleWsMessage / pollForMessages won't double-render it.
         const tempEl = messagesEl.querySelector('.msg[data-id="' + tempId + '"]');
         if (tempEl) tempEl.dataset.id = realId;
         if (realId > lastMsgId) lastMsgId = realId;
       }
     } else {
+      failed = true;
       const d = await res.json();
-      // Remove the optimistic bubble on failure
       const tempEl = messagesEl.querySelector('.msg[data-id="' + tempId + '"]');
       if (tempEl) tempEl.remove();
-      inputEl.value = text; // restore
       if (d.error === 'You are banned') appendSystemMsg('you have been banned.');
+      else inputEl.value = text; // restore text only on real errors
     }
   } catch (e) {
+    failed = true;
     const tempEl = messagesEl.querySelector('.msg[data-id="' + tempId + '"]');
     if (tempEl) tempEl.remove();
     inputEl.value = text;
-  } finally {
-    sendBtn.disabled = false;
-    // Refocus without scrolling so Android keeps the keyboard up after send.
+  }
+
+  sendBtn.disabled = false;
+
+  // Only refocus on desktop — on mobile the keyboard stays up naturally
+  // and calling focus() here is what triggers autocomplete value restore.
+  const isTouch = window.matchMedia('(hover: none) and (pointer: coarse)').matches;
+  if (!isTouch) {
+    inputEl.focus({ preventScroll: true });
+  }
+  // Belt-and-suspenders: if the field somehow got text back (autocomplete race),
+  // clear it again on the next frame.
+  if (!failed) {
     requestAnimationFrame(() => {
-      try { inputEl.focus({ preventScroll: true }); }
-      catch { inputEl.focus(); }
+      if (inputEl.value !== '') inputEl.value = '';
     });
   }
 }
@@ -1351,8 +1383,8 @@ let sendTouchHandledAt = 0;
 sendBtn.addEventListener('touchend', e => {
   e.preventDefault();
   sendTouchHandledAt = Date.now();
-  try { inputEl.focus({ preventScroll: true }); }
-  catch { inputEl.focus(); }
+  // Don't call focus() here — it's the trigger for autocomplete restoring the old value.
+  // The keyboard stays up naturally on mobile after sendMessage clears the input.
   sendMessage();
 }, { passive: false });
 
@@ -1661,12 +1693,7 @@ async function adminDeleteMessage(id) {
   // Removal is handled by the WS 'delete' broadcast
 }
 
-// ─────────────────────────────────────────────────────────────
-// Keyboard / viewport fixes
-// ─────────────────────────────────────────────────────────────
-if (window.visualViewport) {
-  window.visualViewport.addEventListener('resize', scrollToBottom);
-}
+// (keyboard/viewport handled by syncViewportHeight above)
 
 // Token refresh (Firebase tokens expire after 1h)
 setInterval(async () => {
