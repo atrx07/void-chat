@@ -10,6 +10,7 @@ import { handleAdminBan } from './routes/admin/ban.js';
 import { handleAdminUnban } from './routes/admin/unban.js';
 import { handleAdminUsers } from './routes/admin/users.js';
 import { handleAdminDeleteMessage } from './routes/admin/delete-message.js';
+import { handleProfile } from './routes/profile.js';
 
 export default {
   async fetch(request, env, ctx) {
@@ -50,6 +51,7 @@ export default {
       }
 
       // ── REST API ─────────────────────────────────────────────────────────
+      if (path === '/api/user/profile')          return handleProfile(request, env, ctx);
       if (path === '/api/messages')             return handleMessages(request, env, ctx);
       if (path === '/api/online')               return handleOnline(request, env, ctx);
       if (path === '/api/announce')             return handleAnnounce(request, env, ctx);

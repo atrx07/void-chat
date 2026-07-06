@@ -247,6 +247,7 @@
       cursor: pointer; transition: border-color 0.15s, color 0.15s; margin-bottom: 10px;
     }
     .btn:hover { border-color: var(--c2); color: var(--c2); }
+    .btn-sm { width: auto; padding: 6px 14px; font-size: 11px; margin-bottom: 0; }
     .btn.danger:hover { border-color: var(--c1); color: var(--c1); }
     .btn.success:hover { border-color: var(--c3); color: var(--c3); }
 
@@ -274,7 +275,47 @@
     }
     .online-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--c3); flex-shrink: 0; }
 
-    /* admin */
+    /* ── User panel sections ───────────────────────────────── */
+    .profile-section { margin-bottom: 20px; }
+    .profile-section .panel-title { margin-bottom: 10px; }
+    .profile-input-row { display: flex; gap: 8px; align-items: stretch; }
+    .profile-input-row input { flex: 1; min-width: 0; }
+    .profile-input-row .btn-sm {
+      flex-shrink: 0; padding: 0 14px;
+      font-size: 11px; white-space: nowrap;
+    }
+    .color-swatches { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+    .color-swatch {
+      width: 26px; height: 26px; border-radius: 4px;
+      border: 2px solid transparent;
+      cursor: pointer; transition: transform 0.1s, border-color 0.15s;
+      flex-shrink: 0;
+    }
+    .color-swatch:hover { transform: scale(1.15); }
+    .color-swatch.active { border-color: #fff; }
+    .color-swatch.auto {
+      background: linear-gradient(135deg,
+        #e06c75 0%, #61afef 20%, #98c379 40%,
+        #e5c07b 60%, #c678dd 80%, #56b6c2 100%);
+      position: relative;
+    }
+    .color-swatch.auto::after {
+      content: 'A'; position: absolute; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 11px; font-weight: 700; color: rgba(0,0,0,0.65);
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .name-preview {
+      font-size: 12px; margin-top: 8px;
+      padding: 8px 10px;
+      background: var(--surface2); border: 1px solid var(--border);
+    }
+    .name-preview span { font-weight: 500; }
+    .profile-msg { font-size: 11px; margin-top: 8px; min-height: 14px; letter-spacing: 0.03em; }
+    .profile-msg.ok { color: var(--c3); }
+    .profile-msg.err { color: var(--c1); }
+
+    /* ── Admin panel ────────────────────────────────────────── */
     #admin-tab { display: none; }
     body.is-admin #admin-tab { display: block; }
 
@@ -565,6 +606,33 @@
       <div id="user-card-name"></div>
       <div id="user-card-email"></div>
     </div>
+
+    <div class="divider"></div>
+
+    <!-- Display name -->
+    <div class="profile-section">
+      <div class="panel-title">display name</div>
+      <div class="profile-input-row">
+        <input type="text" id="profile-name-input" maxlength="32" autocomplete="off" placeholder="your name..." />
+        <button class="btn btn-sm" id="profile-name-btn">save</button>
+      </div>
+      <div class="profile-msg" id="profile-name-msg"></div>
+    </div>
+
+    <!-- Name color -->
+    <div class="profile-section">
+      <div class="panel-title">name color</div>
+      <div class="color-swatches" id="color-swatches">
+        <!-- populated by JS -->
+      </div>
+      <div class="name-preview" id="name-preview">
+        preview: <span id="name-preview-text"></span>
+      </div>
+      <div class="profile-msg" id="profile-color-msg"></div>
+    </div>
+
+    <div class="divider"></div>
+
     <button class="btn danger" id="logout-btn">sign out</button>
   </div>
 
@@ -712,6 +780,7 @@ let wsReconnectTimer = null;
 let lastMsgId     = 0;
 let lastSenderId  = null;   // for collapsing consecutive messages
 let pollTimer     = null;   // fallback polling interval
+let userProfile   = { display_name: null, name_color: null }; // cached profile
 
 const messagesEl  = document.getElementById('messages');
 const inputEl     = document.getElementById('msg-input');
@@ -883,24 +952,56 @@ function stopPolling() {
 // Chat init / teardown
 // ─────────────────────────────────────────────────────────────
 async function initChat(user) {
-  const displayName = user.displayName || user.email?.split('@')[0] || 'user';
-  const color = colorForName(displayName);
+  // Fetch saved profile from worker (name override + color)
+  try {
+    const token = await getToken();
+    const res = await fetch(API_BASE + '/api/user/profile', {
+      headers: { 'Authorization': 'Bearer ' + token },
+    });
+    if (res.ok) {
+      const data = await res.json();
+      userProfile.display_name = data.display_name || null;
+      userProfile.name_color   = data.name_color   || null;
+    }
+  } catch {}
 
-  // Update header name
-  myNameEl.innerHTML = '<strong style="color:' + color + '">' + escHtml(displayName) + '</strong>';
-
-  // User card in sidebar
-  document.getElementById('user-card-name').innerHTML = '<span style="color:' + color + '">' + escHtml(displayName) + '</span>';
-  document.getElementById('user-card-email').textContent = user.email || '';
+  refreshProfileUI(user);
+  initColorSwatches();
 
   // Load history, then open WebSocket + start polling fallback
   await loadHistory();
   connectWS();
   startPolling();
+  checkAdminStatus();
 
   // Enable input
   inputEl.disabled  = false;
   sendBtn.disabled  = false;
+}
+
+function refreshProfileUI(user) {
+  const rawName    = user?.displayName || user?.email?.split('@')[0] || 'user';
+  const displayName = userProfile.display_name || rawName;
+  const color       = userProfile.name_color   || colorForName(displayName);
+
+  // Header
+  myNameEl.innerHTML = '<strong style="color:' + color + '">' + escHtml(displayName) + '</strong>';
+
+  // User card in sidebar
+  document.getElementById('user-card-name').innerHTML =
+    '<span style="color:' + color + '">' + escHtml(displayName) + '</span>';
+  document.getElementById('user-card-email').textContent = user?.email || '';
+
+  // Profile name input placeholder
+  const nameInput = document.getElementById('profile-name-input');
+  if (nameInput) nameInput.value = displayName;
+
+  // Name preview
+  const previewEl = document.getElementById('name-preview-text');
+  if (previewEl) {
+    previewEl.textContent = displayName;
+    previewEl.style.color = color;
+  }
 }
 
 function teardownChat() {
@@ -916,6 +1017,7 @@ function teardownChat() {
   wsStatusEl.className = '';
   document.body.classList.remove('is-admin');
   isAdmin = false;
+  userProfile = { display_name: null, name_color: null };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1135,7 +1237,7 @@ function appendMessage(msg) {
   const isMe      = msg.uid === currentUser?.uid;
   const isAnnounce = msg.type === 'announce';
   const name      = isAnnounce ? 'admin' : msg.display_name;
-  const color     = isAnnounce ? 'var(--c4)' : colorForName(name);
+  const color     = isAnnounce ? 'var(--c4)' : (msg.name_color || colorForName(name));
 
   const sameUser  = !isAnnounce && lastSenderId === msg.uid;
   lastSenderId    = isAnnounce ? null : msg.uid;
@@ -1193,7 +1295,8 @@ async function sendMessage() {
   const optimisticMsg = {
     id: tempId,
     uid: currentUser.uid,
-    display_name: currentUser.displayName || currentUser.email?.split('@')[0] || 'user',
+    display_name: userProfile.display_name || currentUser.displayName || currentUser.email?.split('@')[0] || 'user',
+    name_color: userProfile.name_color || null,
     message: text,
     created_at: Date.now(),
     type: 'chat',
@@ -1329,6 +1432,110 @@ setInterval(async () => {
 function updateOnlineBadge(count) {
   document.getElementById('online-count-badge').textContent = count || 0;
 }
+
+// ─────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// Profile — color swatches + name change
+// ─────────────────────────────────────────────────────────────
+const PALETTE = [
+  '#e06c75','#61afef','#98c379','#e5c07b','#c678dd',
+  '#56b6c2','#d19a66','#be5046','#7ca3cc','#a8cc8c',
+];
+
+function initColorSwatches() {
+  const container = document.getElementById('color-swatches');
+  if (!container || container.dataset.ready) return;
+  container.dataset.ready = '1';
+
+  // "Auto" swatch — clears saved color, falls back to hash
+  const autoEl = document.createElement('div');
+  autoEl.className = 'color-swatch auto' + (!userProfile.name_color ? ' active' : '');
+  autoEl.title = 'auto (based on name)';
+  autoEl.addEventListener('click', () => selectColor(null));
+  container.appendChild(autoEl);
+
+  PALETTE.forEach(hex => {
+    const el = document.createElement('div');
+    el.className = 'color-swatch' + (userProfile.name_color === hex ? ' active' : '');
+    el.style.background = hex;
+    el.title = hex;
+    el.addEventListener('click', () => selectColor(hex));
+    container.appendChild(el);
+  });
+}
+
+function selectColor(hex) {
+  // Update in-memory (not saved yet — save happens with name save or standalone color save)
+  userProfile.name_color = hex;
+
+  // Update swatch active states
+  document.querySelectorAll('.color-swatch').forEach(el => {
+    if (hex === null) {
+      el.classList.toggle('active', el.classList.contains('auto'));
+    } else {
+      el.classList.toggle('active', el.style.background === hex || el.title === hex);
+    }
+  });
+
+  // Update preview
+  const name = document.getElementById('profile-name-input')?.value ||
+               userProfile.display_name ||
+               currentUser?.displayName || '';
+  const color = hex || colorForName(name);
+  const previewEl = document.getElementById('name-preview-text');
+  if (previewEl) { previewEl.textContent = name; previewEl.style.color = color; }
+
+  // Auto-save color immediately
+  saveProfile(null, hex, 'profile-color-msg');
+}
+
+async function saveProfile(newName, newColor, msgId) {
+  const msgEl = document.getElementById(msgId);
+  const name = (newName !== null ? newName : null) ||
+               document.getElementById('profile-name-input')?.value.trim() ||
+               userProfile.display_name ||
+               currentUser?.displayName || 'user';
+  const color = newColor !== undefined ? newColor : userProfile.name_color;
+
+  try {
+    const token = await getToken();
+    const res = await fetch(API_BASE + '/api/user/profile', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+      body: JSON.stringify({ display_name: name, name_color: color }),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      userProfile.display_name = data.display_name;
+      userProfile.name_color   = data.name_color;
+      refreshProfileUI(currentUser);
+      if (msgEl) { msgEl.textContent = 'saved'; msgEl.className = 'profile-msg ok'; setTimeout(() => { if(msgEl) msgEl.textContent = ''; }, 2500); }
+    } else {
+      if (msgEl) { msgEl.textContent = data.error || 'error'; msgEl.className = 'profile-msg err'; }
+    }
+  } catch (e) {
+    if (msgEl) { msgEl.textContent = 'network error'; msgEl.className = 'profile-msg err'; }
+  }
+}
+
+// Name save button
+document.getElementById('profile-name-btn').addEventListener('click', () => {
+  const val = document.getElementById('profile-name-input').value.trim();
+  if (!val || val.length < 2) {
+    const msgEl = document.getElementById('profile-name-msg');
+    msgEl.textContent = 'min 2 characters'; msgEl.className = 'profile-msg err';
+    return;
+  }
+  saveProfile(val, undefined, 'profile-name-msg');
+});
+
+// Live preview while typing the name
+document.getElementById('profile-name-input').addEventListener('input', (e) => {
+  const name = e.target.value || userProfile.display_name || currentUser?.displayName || '';
+  const color = userProfile.name_color || colorForName(name);
+  const previewEl = document.getElementById('name-preview-text');
+  if (previewEl) { previewEl.textContent = name; previewEl.style.color = color; }
+});
 
 // ─────────────────────────────────────────────────────────────
 // Admin — detected by server response on first load

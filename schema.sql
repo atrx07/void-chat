@@ -26,6 +26,15 @@ CREATE TABLE IF NOT EXISTS online_users (
   last_seen    INTEGER NOT NULL
 );
 
+-- User profile customizations (display name override, name color)
+CREATE TABLE IF NOT EXISTS user_profiles (
+  uid          TEXT    NOT NULL UNIQUE,
+  display_name TEXT    NOT NULL,
+  name_color   TEXT,                       -- hex color or NULL (auto from hash)
+  updated_at   INTEGER NOT NULL
+);
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_messages_id   ON messages (id);
 CREATE INDEX IF NOT EXISTS idx_online_seen   ON online_users (last_seen);
+CREATE INDEX IF NOT EXISTS idx_profiles_uid  ON user_profiles (uid);

@@ -9,9 +9,16 @@ export async function handleMessages(request, env) {
     const since = parseInt(url.searchParams.get('since') || '0', 10);
 
     try {
-      const r = await env.DB.prepare(
-        'SELECT id, uid, display_name, message, created_at, type FROM messages WHERE id > ? ORDER BY id ASC LIMIT 200'
-      ).bind(since).all();
+      // Join with user_profiles so each message carries the sender's current color
+      const r = await env.DB.prepare(`
+        SELECT m.id, m.uid, m.display_name, m.message, m.created_at, m.type,
+               p.name_color
+        FROM   messages m
+        LEFT JOIN user_profiles p ON p.uid = m.uid
+        WHERE  m.id > ?
+        ORDER  BY m.id ASC
+        LIMIT  200
+      `).bind(since).all();
 
       return jsonResponse({ messages: r.results || [] }, 200, env);
     } catch (e) {
@@ -49,6 +56,7 @@ export async function handleMessages(request, env) {
         id: result.meta?.last_row_id,
         uid: user.uid,
         display_name: displayName,
+        name_color: nameColor,
         message,
         created_at: now,
         type: 'chat',
