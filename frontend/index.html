@@ -783,6 +783,7 @@ let lastMsgId     = 0;
 let lastSenderId  = null;   // for collapsing consecutive messages
 let pollTimer     = null;   // fallback polling interval
 let userProfile   = { display_name: null, name_color: null }; // cached profile
+let isSending     = false;  // mutex: prevents concurrent sendMessage calls
 
 const messagesEl  = document.getElementById('messages');
 const inputEl     = document.getElementById('msg-input');
@@ -949,8 +950,13 @@ async function pollForMessages() {
     let appended = false;
     msgs.forEach(m => {
       if (m.id <= lastMsgId) return;
-      // Skip if already rendered optimistically (same id)
+      // Already rendered with real id
       if (messagesEl.querySelector('.msg[data-id="' + m.id + '"]')) {
+        lastMsgId = m.id;
+        return;
+      }
+      // Already rendered optimistically — just swap the id, don't re-append
+      if (reconcileOptimistic(m)) {
         lastMsgId = m.id;
         return;
       }
@@ -1226,9 +1232,15 @@ document.addEventListener('visibilitychange', () => {
 function handleWsMessage(msg) {
   switch (msg.type) {
     case 'message': {
-      // Only show if newer than what we have
       if (msg.message.id <= lastMsgId) return;
       const atBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 80;
+      // If we already rendered this optimistically (temp element), just swap the
+      // id and update lastMsgId — don't append a second copy which would hide its header.
+      if (reconcileOptimistic(msg.message)) {
+        lastMsgId = msg.message.id;
+        if (atBottom) scrollToBottom();
+        break;
+      }
       appendMessage(msg.message);
       lastMsgId = msg.message.id;
       if (atBottom) scrollToBottom();
@@ -1257,6 +1269,26 @@ function handleWsMessage(msg) {
 // ─────────────────────────────────────────────────────────────
 // Message rendering — new layout
 // ─────────────────────────────────────────────────────────────
+
+// Find a temp-* element that belongs to us with the same text and swap its
+// data-id to the real server id. Returns true if a match was found so the
+// caller knows NOT to call appendMessage (which would duplicate the message
+// and, worse, hide its header via the same-user collapse logic).
+function reconcileOptimistic(serverMsg) {
+  // Only our own messages get optimistic elements
+  if (serverMsg.uid !== currentUser?.uid) return false;
+  // Look for any temp element from this user with matching text
+  const temps = messagesEl.querySelectorAll('.msg[data-id^="temp-"]');
+  for (const el of temps) {
+    const bodyEl = el.querySelector('.msg-body');
+    if (bodyEl && bodyEl.textContent === serverMsg.message) {
+      el.dataset.id = serverMsg.id;      // swap temp id → real id
+      return true;
+    }
+  }
+  return false;
+}
+
 function appendMessage(msg) {
   const isMe      = msg.uid === currentUser?.uid;
   const isAnnounce = msg.type === 'announce';
@@ -1305,11 +1337,14 @@ function scrollToBottom() {
 // Send message
 // ─────────────────────────────────────────────────────────────
 async function sendMessage() {
+  if (isSending) return;                      // prevent double-send on held Enter
   const text = inputEl.value.trim();
   if (!text || !currentUser) return;
+  isSending = true;
 
-  // Clear synchronously and keep a guard so autocomplete/autofill
-  // can't restore the old value while the async fetch is in flight.
+  // Wipe the field immediately. Setting value='' then blurring+refocusing
+  // (which we intentionally avoid) is the main autocomplete trigger — we
+  // also set autocomplete=off as a belt-and-suspenders guard.
   inputEl.value = '';
   inputEl.setAttribute('autocomplete', 'off');
   sendBtn.disabled = true;
@@ -1358,16 +1393,15 @@ async function sendMessage() {
     inputEl.value = text;
   }
 
+  isSending = false;
   sendBtn.disabled = false;
 
-  // Only refocus on desktop — on mobile the keyboard stays up naturally
-  // and calling focus() here is what triggers autocomplete value restore.
+  // Only refocus on desktop — on mobile the keyboard stays up naturally.
   const isTouch = window.matchMedia('(hover: none) and (pointer: coarse)').matches;
   if (!isTouch) {
     inputEl.focus({ preventScroll: true });
   }
-  // Belt-and-suspenders: if the field somehow got text back (autocomplete race),
-  // clear it again on the next frame.
+  // Final safety net: clear any text that snuck back in (autocomplete race)
   if (!failed) {
     requestAnimationFrame(() => {
       if (inputEl.value !== '') inputEl.value = '';
