@@ -6,10 +6,22 @@ export async function handleAdminUsers(request, env) {
   if (!user || !isAdmin(user, env)) return errorResponse('Forbidden', 403, env);
 
   try {
-    // Get all users who have posted at least one message
-    const users = await env.DB.prepare(
-      'SELECT DISTINCT uid, display_name FROM messages WHERE type = ? ORDER BY display_name ASC'
-    ).bind('chat').all();
+    // One row per uid — resolve current name from user_profiles first,
+    // fall back to the display_name on their most recent chat message.
+    const users = await env.DB.prepare(`
+      SELECT m.uid,
+             COALESCE(p.display_name, m.display_name) AS display_name
+      FROM (
+        SELECT uid, display_name
+        FROM   messages
+        WHERE  type = 'chat'
+        AND    id IN (
+          SELECT MAX(id) FROM messages WHERE type = 'chat' GROUP BY uid
+        )
+      ) m
+      LEFT JOIN user_profiles p ON p.uid = m.uid
+      ORDER BY display_name ASC
+    `).all();
 
     const banned = await env.DB.prepare(
       'SELECT uid FROM banned_users'
