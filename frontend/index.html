@@ -247,6 +247,7 @@
       cursor: pointer; transition: border-color 0.15s, color 0.15s; margin-bottom: 10px;
     }
     .btn:hover { border-color: var(--c2); color: var(--c2); }
+    .btn-sm { width: auto; padding: 6px 14px; font-size: 11px; margin-bottom: 0; }
     .btn.danger:hover { border-color: var(--c1); color: var(--c1); }
     .btn.success:hover { border-color: var(--c3); color: var(--c3); }
 
@@ -274,7 +275,47 @@
     }
     .online-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--c3); flex-shrink: 0; }
 
-    /* admin */
+    /* ── User panel sections ───────────────────────────────── */
+    .profile-section { margin-bottom: 20px; }
+    .profile-section .panel-title { margin-bottom: 10px; }
+    .profile-input-row { display: flex; gap: 8px; align-items: stretch; }
+    .profile-input-row input { flex: 1; min-width: 0; }
+    .profile-input-row .btn-sm {
+      flex-shrink: 0; padding: 0 14px;
+      font-size: 11px; white-space: nowrap;
+    }
+    .color-swatches { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 4px; }
+    .color-swatch {
+      width: 26px; height: 26px; border-radius: 4px;
+      border: 2px solid transparent;
+      cursor: pointer; transition: transform 0.1s, border-color 0.15s;
+      flex-shrink: 0;
+    }
+    .color-swatch:hover { transform: scale(1.15); }
+    .color-swatch.active { border-color: #fff; }
+    .color-swatch.auto {
+      background: linear-gradient(135deg,
+        #e06c75 0%, #61afef 20%, #98c379 40%,
+        #e5c07b 60%, #c678dd 80%, #56b6c2 100%);
+      position: relative;
+    }
+    .color-swatch.auto::after {
+      content: 'A'; position: absolute; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 11px; font-weight: 700; color: rgba(0,0,0,0.65);
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .name-preview {
+      font-size: 12px; margin-top: 8px;
+      padding: 8px 10px;
+      background: var(--surface2); border: 1px solid var(--border);
+    }
+    .name-preview span { font-weight: 500; }
+    .profile-msg { font-size: 11px; margin-top: 8px; min-height: 14px; letter-spacing: 0.03em; }
+    .profile-msg.ok { color: var(--c3); }
+    .profile-msg.err { color: var(--c1); }
+
+    /* ── Admin panel ────────────────────────────────────────── */
     #admin-tab { display: none; }
     body.is-admin #admin-tab { display: block; }
 
@@ -318,9 +359,11 @@
     /* ─── MAIN CHAT APP ───────────────────────────────────────── */
     #app {
       position: fixed;
-      inset: 0;
+      /* top/height are controlled by syncViewportHeight() in JS
+         so the app shrinks exactly to the visible area above the keyboard */
+      top: 0; left: 0; right: 0;
+      height: 100dvh;
       display: flex; flex-direction: column;
-      height: var(--app-height, 100dvh);
       max-width: 720px; margin: 0 auto;
       padding-bottom: env(safe-area-inset-bottom);
       overflow: hidden;
@@ -565,6 +608,33 @@
       <div id="user-card-name"></div>
       <div id="user-card-email"></div>
     </div>
+
+    <div class="divider"></div>
+
+    <!-- Display name -->
+    <div class="profile-section">
+      <div class="panel-title">display name</div>
+      <div class="profile-input-row">
+        <input type="text" id="profile-name-input" maxlength="32" autocomplete="off" placeholder="your name..." />
+        <button class="btn btn-sm" id="profile-name-btn">save</button>
+      </div>
+      <div class="profile-msg" id="profile-name-msg"></div>
+    </div>
+
+    <!-- Name color -->
+    <div class="profile-section">
+      <div class="panel-title">name color</div>
+      <div class="color-swatches" id="color-swatches">
+        <!-- populated by JS -->
+      </div>
+      <div class="name-preview" id="name-preview">
+        preview: <span id="name-preview-text"></span>
+      </div>
+      <div class="profile-msg" id="profile-color-msg"></div>
+    </div>
+
+    <div class="divider"></div>
+
     <button class="btn danger" id="logout-btn">sign out</button>
   </div>
 
@@ -712,6 +782,8 @@ let wsReconnectTimer = null;
 let lastMsgId     = 0;
 let lastSenderId  = null;   // for collapsing consecutive messages
 let pollTimer     = null;   // fallback polling interval
+let userProfile   = { display_name: null, name_color: null }; // cached profile
+let isSending     = false;  // mutex: prevents concurrent sendMessage calls
 
 const messagesEl  = document.getElementById('messages');
 const inputEl     = document.getElementById('msg-input');
@@ -721,16 +793,38 @@ const myNameEl    = document.getElementById('my-name-display');
 const loadingEl   = document.getElementById('loading');
 const authScreen  = document.getElementById('auth-screen');
 
-// Keep the app locked to the visible viewport on mobile keyboards.
-// Android Chrome/Brave can otherwise shove the top bar out of view.
+// ── Viewport / keyboard layout ───────────────────────────────
+// On mobile, when the software keyboard appears the visualViewport
+// shrinks. We use that to set the app height AND offset the app
+// down by visualViewport.offsetTop so it stays flush under the
+// status bar. This is the standard pattern for "keyboard pushes
+// chat up, not the whole page" behaviour.
+const appEl = document.getElementById('app');
+
 function syncViewportHeight() {
-  const h = window.visualViewport?.height || window.innerHeight;
+  const vv = window.visualViewport;
+  const h  = vv ? vv.height  : window.innerHeight;
+  const t  = vv ? vv.offsetTop : 0;
   document.documentElement.style.setProperty('--app-height', h + 'px');
+  // Shift the app to start exactly at the viewport top (handles iOS Safari bounce)
+  if (appEl) {
+    appEl.style.height = h + 'px';
+    appEl.style.top    = t + 'px';
+  }
 }
+
 syncViewportHeight();
 window.addEventListener('resize', syncViewportHeight);
 if (window.visualViewport) {
-  window.visualViewport.addEventListener('resize', syncViewportHeight);
+  window.visualViewport.addEventListener('resize', () => {
+    syncViewportHeight();
+    // When keyboard closes, scroll back to bottom so last message is visible
+    const vv = window.visualViewport;
+    const prev = parseFloat(appEl?.style.height || '0');
+    requestAnimationFrame(() => {
+      if (vv && vv.height > prev) scrollToBottom();
+    });
+  });
   window.visualViewport.addEventListener('scroll', syncViewportHeight);
 }
 
@@ -856,14 +950,13 @@ async function pollForMessages() {
     let appended = false;
     msgs.forEach(m => {
       if (m.id <= lastMsgId) return;
+      // Already rendered with real id
       if (messagesEl.querySelector('.msg[data-id="' + m.id + '"]')) {
         lastMsgId = m.id;
         return;
       }
-      // Check for optimistic temp element
-      const existingTemp = findOptimisticEl(m.uid, m.message);
-      if (existingTemp) {
-        existingTemp.dataset.id = m.id;
+      // Already rendered optimistically — just swap the id, don't re-append
+      if (reconcileOptimistic(m)) {
         lastMsgId = m.id;
         return;
       }
@@ -889,24 +982,56 @@ function stopPolling() {
 // Chat init / teardown
 // ─────────────────────────────────────────────────────────────
 async function initChat(user) {
-  const displayName = user.displayName || user.email?.split('@')[0] || 'user';
-  const color = colorForName(displayName);
+  // Fetch saved profile from worker (name override + color)
+  try {
+    const token = await getToken();
+    const res = await fetch(API_BASE + '/api/user/profile', {
+      headers: { 'Authorization': 'Bearer ' + token },
+    });
+    if (res.ok) {
+      const data = await res.json();
+      userProfile.display_name = data.display_name || null;
+      userProfile.name_color   = data.name_color   || null;
+    }
+  } catch {}
 
-  // Update header name
-  myNameEl.innerHTML = '<strong style="color:' + color + '">' + escHtml(displayName) + '</strong>';
-
-  // User card in sidebar
-  document.getElementById('user-card-name').innerHTML = '<span style="color:' + color + '">' + escHtml(displayName) + '</span>';
-  document.getElementById('user-card-email').textContent = user.email || '';
+  refreshProfileUI(user);
+  initColorSwatches();
 
   // Load history, then open WebSocket + start polling fallback
   await loadHistory();
   connectWS();
   startPolling();
+  checkAdminStatus();
 
   // Enable input
   inputEl.disabled  = false;
   sendBtn.disabled  = false;
+}
+
+function refreshProfileUI(user) {
+  const rawName    = user?.displayName || user?.email?.split('@')[0] || 'user';
+  const displayName = userProfile.display_name || rawName;
+  const color       = userProfile.name_color   || colorForName(displayName);
+
+  // Header
+  myNameEl.innerHTML = '<strong style="color:' + color + '">' + escHtml(displayName) + '</strong>';
+
+  // User card in sidebar
+  document.getElementById('user-card-name').innerHTML =
+    '<span style="color:' + color + '">' + escHtml(displayName) + '</span>';
+  document.getElementById('user-card-email').textContent = user?.email || '';
+
+  // Profile name input placeholder
+  const nameInput = document.getElementById('profile-name-input');
+  if (nameInput) nameInput.value = displayName;
+
+  // Name preview
+  const previewEl = document.getElementById('name-preview-text');
+  if (previewEl) {
+    previewEl.textContent = displayName;
+    previewEl.style.color = color;
+  }
 }
 
 function teardownChat() {
@@ -922,6 +1047,7 @@ function teardownChat() {
   wsStatusEl.className = '';
   document.body.classList.remove('is-admin');
   isAdmin = false;
+  userProfile = { display_name: null, name_color: null };
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1108,15 +1234,14 @@ function handleWsMessage(msg) {
     case 'message': {
       if (msg.message.id <= lastMsgId) return;
       const atBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 80;
-      // Check for an optimistic (temp-*) element we already rendered for this
-      // exact message. If found, just swap the id — do NOT call appendMessage
-      // again, which would re-trigger the same-user header-collapse.
-      const existingTemp = findOptimisticEl(msg.message.uid, msg.message.message);
-      if (existingTemp) {
-        existingTemp.dataset.id = msg.message.id;
-      } else {
-        appendMessage(msg.message);
+      // If we already rendered this optimistically (temp element), just swap the
+      // id and update lastMsgId — don't append a second copy which would hide its header.
+      if (reconcileOptimistic(msg.message)) {
+        lastMsgId = msg.message.id;
+        if (atBottom) scrollToBottom();
+        break;
       }
+      appendMessage(msg.message);
       lastMsgId = msg.message.id;
       if (atBottom) scrollToBottom();
       break;
@@ -1145,22 +1270,30 @@ function handleWsMessage(msg) {
 // Message rendering — new layout
 // ─────────────────────────────────────────────────────────────
 
-// Find a temp-* element that matches uid + message text.
-// Used to avoid double-rendering our own sent messages.
-function findOptimisticEl(uid, message) {
-  if (uid !== currentUser?.uid) return null;
+// Find a temp-* element that belongs to us with the same text and swap its
+// data-id to the real server id. Returns true if a match was found so the
+// caller knows NOT to call appendMessage (which would duplicate the message
+// and, worse, hide its header via the same-user collapse logic).
+function reconcileOptimistic(serverMsg) {
+  // Only our own messages get optimistic elements
+  if (serverMsg.uid !== currentUser?.uid) return false;
+  // Look for any temp element from this user with matching text
   const temps = messagesEl.querySelectorAll('.msg[data-id^="temp-"]');
   for (const el of temps) {
-    if (el.querySelector('.msg-body')?.textContent === message) return el;
+    const bodyEl = el.querySelector('.msg-body');
+    if (bodyEl && bodyEl.textContent === serverMsg.message) {
+      el.dataset.id = serverMsg.id;      // swap temp id → real id
+      return true;
+    }
   }
-  return null;
+  return false;
 }
 
 function appendMessage(msg) {
   const isMe      = msg.uid === currentUser?.uid;
   const isAnnounce = msg.type === 'announce';
   const name      = isAnnounce ? 'admin' : msg.display_name;
-  const color     = isAnnounce ? 'var(--c4)' : colorForName(name);
+  const color     = isAnnounce ? 'var(--c4)' : (msg.name_color || colorForName(name));
 
   const sameUser  = !isAnnounce && lastSenderId === msg.uid;
   lastSenderId    = isAnnounce ? null : msg.uid;
@@ -1204,21 +1337,24 @@ function scrollToBottom() {
 // Send message
 // ─────────────────────────────────────────────────────────────
 async function sendMessage() {
+  if (isSending) return;                      // prevent double-send on held Enter
   const text = inputEl.value.trim();
   if (!text || !currentUser) return;
+  isSending = true;
+
+  // Wipe the field immediately. Setting value='' then blurring+refocusing
+  // (which we intentionally avoid) is the main autocomplete trigger — we
+  // also set autocomplete=off as a belt-and-suspenders guard.
   inputEl.value = '';
+  inputEl.setAttribute('autocomplete', 'off');
   sendBtn.disabled = true;
 
-  // ── Optimistic render ─────────────────────────────────────
-  // Show the message immediately with a temp id so the user sees
-  // it right away. The real row (with the real id) will arrive via
-  // WS broadcast or the polling fallback; we reconcile by replacing
-  // the temp element then.
   const tempId = 'temp-' + Date.now();
   const optimisticMsg = {
     id: tempId,
     uid: currentUser.uid,
-    display_name: currentUser.displayName || currentUser.email?.split('@')[0] || 'user',
+    display_name: userProfile.display_name || currentUser.displayName || currentUser.email?.split('@')[0] || 'user',
+    name_color: userProfile.name_color || null,
     message: text,
     created_at: Date.now(),
     type: 'chat',
@@ -1226,6 +1362,7 @@ async function sendMessage() {
   appendMessage(optimisticMsg);
   scrollToBottom();
 
+  let failed = false;
   try {
     const token = await getToken();
     const res   = await fetch(API_BASE + '/api/messages', {
@@ -1237,26 +1374,38 @@ async function sendMessage() {
       const data = await res.json();
       const realId = data.message?.id;
       if (realId) {
-        // Swap temp element's data-id to the real id so dedup logic
-        // in handleWsMessage / pollForMessages won't double-render it.
         const tempEl = messagesEl.querySelector('.msg[data-id="' + tempId + '"]');
         if (tempEl) tempEl.dataset.id = realId;
         if (realId > lastMsgId) lastMsgId = realId;
       }
     } else {
+      failed = true;
       const d = await res.json();
-      // Remove the optimistic bubble on failure
       const tempEl = messagesEl.querySelector('.msg[data-id="' + tempId + '"]');
       if (tempEl) tempEl.remove();
-      inputEl.value = text; // restore
       if (d.error === 'You are banned') appendSystemMsg('you have been banned.');
+      else inputEl.value = text; // restore text only on real errors
     }
   } catch (e) {
+    failed = true;
     const tempEl = messagesEl.querySelector('.msg[data-id="' + tempId + '"]');
     if (tempEl) tempEl.remove();
     inputEl.value = text;
-  } finally {
-    sendBtn.disabled = false;
+  }
+
+  isSending = false;
+  sendBtn.disabled = false;
+
+  // Only refocus on desktop — on mobile the keyboard stays up naturally.
+  const isTouch = window.matchMedia('(hover: none) and (pointer: coarse)').matches;
+  if (!isTouch) {
+    inputEl.focus({ preventScroll: true });
+  }
+  // Final safety net: clear any text that snuck back in (autocomplete race)
+  if (!failed) {
+    requestAnimationFrame(() => {
+      if (inputEl.value !== '') inputEl.value = '';
+    });
   }
 }
 
@@ -1268,6 +1417,8 @@ let sendTouchHandledAt = 0;
 sendBtn.addEventListener('touchend', e => {
   e.preventDefault();
   sendTouchHandledAt = Date.now();
+  // Don't call focus() here — it's the trigger for autocomplete restoring the old value.
+  // The keyboard stays up naturally on mobile after sendMessage clears the input.
   sendMessage();
 }, { passive: false });
 
@@ -1347,6 +1498,110 @@ setInterval(async () => {
 function updateOnlineBadge(count) {
   document.getElementById('online-count-badge').textContent = count || 0;
 }
+
+// ─────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────
+// Profile — color swatches + name change
+// ─────────────────────────────────────────────────────────────
+const PALETTE = [
+  '#e06c75','#61afef','#98c379','#e5c07b','#c678dd',
+  '#56b6c2','#d19a66','#be5046','#7ca3cc','#a8cc8c',
+];
+
+function initColorSwatches() {
+  const container = document.getElementById('color-swatches');
+  if (!container || container.dataset.ready) return;
+  container.dataset.ready = '1';
+
+  // "Auto" swatch — clears saved color, falls back to hash
+  const autoEl = document.createElement('div');
+  autoEl.className = 'color-swatch auto' + (!userProfile.name_color ? ' active' : '');
+  autoEl.title = 'auto (based on name)';
+  autoEl.addEventListener('click', () => selectColor(null));
+  container.appendChild(autoEl);
+
+  PALETTE.forEach(hex => {
+    const el = document.createElement('div');
+    el.className = 'color-swatch' + (userProfile.name_color === hex ? ' active' : '');
+    el.style.background = hex;
+    el.title = hex;
+    el.addEventListener('click', () => selectColor(hex));
+    container.appendChild(el);
+  });
+}
+
+function selectColor(hex) {
+  // Update in-memory (not saved yet — save happens with name save or standalone color save)
+  userProfile.name_color = hex;
+
+  // Update swatch active states
+  document.querySelectorAll('.color-swatch').forEach(el => {
+    if (hex === null) {
+      el.classList.toggle('active', el.classList.contains('auto'));
+    } else {
+      el.classList.toggle('active', el.style.background === hex || el.title === hex);
+    }
+  });
+
+  // Update preview
+  const name = document.getElementById('profile-name-input')?.value ||
+               userProfile.display_name ||
+               currentUser?.displayName || '';
+  const color = hex || colorForName(name);
+  const previewEl = document.getElementById('name-preview-text');
+  if (previewEl) { previewEl.textContent = name; previewEl.style.color = color; }
+
+  // Auto-save color immediately
+  saveProfile(null, hex, 'profile-color-msg');
+}
+
+async function saveProfile(newName, newColor, msgId) {
+  const msgEl = document.getElementById(msgId);
+  const name = (newName !== null ? newName : null) ||
+               document.getElementById('profile-name-input')?.value.trim() ||
+               userProfile.display_name ||
+               currentUser?.displayName || 'user';
+  const color = newColor !== undefined ? newColor : userProfile.name_color;
+
+  try {
+    const token = await getToken();
+    const res = await fetch(API_BASE + '/api/user/profile', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
+      body: JSON.stringify({ display_name: name, name_color: color }),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      userProfile.display_name = data.display_name;
+      userProfile.name_color   = data.name_color;
+      refreshProfileUI(currentUser);
+      if (msgEl) { msgEl.textContent = 'saved'; msgEl.className = 'profile-msg ok'; setTimeout(() => { if(msgEl) msgEl.textContent = ''; }, 2500); }
+    } else {
+      if (msgEl) { msgEl.textContent = data.error || 'error'; msgEl.className = 'profile-msg err'; }
+    }
+  } catch (e) {
+    if (msgEl) { msgEl.textContent = 'network error'; msgEl.className = 'profile-msg err'; }
+  }
+}
+
+// Name save button
+document.getElementById('profile-name-btn').addEventListener('click', () => {
+  const val = document.getElementById('profile-name-input').value.trim();
+  if (!val || val.length < 2) {
+    const msgEl = document.getElementById('profile-name-msg');
+    msgEl.textContent = 'min 2 characters'; msgEl.className = 'profile-msg err';
+    return;
+  }
+  saveProfile(val, undefined, 'profile-name-msg');
+});
+
+// Live preview while typing the name
+document.getElementById('profile-name-input').addEventListener('input', (e) => {
+  const name = e.target.value || userProfile.display_name || currentUser?.displayName || '';
+  const color = userProfile.name_color || colorForName(name);
+  const previewEl = document.getElementById('name-preview-text');
+  if (previewEl) { previewEl.textContent = name; previewEl.style.color = color; }
+});
 
 // ─────────────────────────────────────────────────────────────
 // Admin — detected by server response on first load
@@ -1472,12 +1727,7 @@ async function adminDeleteMessage(id) {
   // Removal is handled by the WS 'delete' broadcast
 }
 
-// ─────────────────────────────────────────────────────────────
-// Keyboard / viewport fixes
-// ─────────────────────────────────────────────────────────────
-if (window.visualViewport) {
-  window.visualViewport.addEventListener('resize', scrollToBottom);
-}
+// (keyboard/viewport handled by syncViewportHeight above)
 
 // Token refresh (Firebase tokens expire after 1h)
 setInterval(async () => {
